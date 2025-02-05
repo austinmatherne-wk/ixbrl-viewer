@@ -234,3 +234,17 @@ export function getIXHiddenLinkStyle(domNode) {
     }
     return null;
 }
+
+/**
+ * Moves all attributes from one element to another, excluding data attributes created by the viewer application.
+ */
+export function moveNonAppAttributes(fromElement, toElement) {
+        // Hypen seperated dataset attributes are returned camel case when accessed via jquery .prop().
+        const hypenSepAppAttrPrefix = `data-${IXBRL_VIEWER_DATASET_PREFIX.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}`;
+        for (const attr of [...fromElement.prop("attributes")]) {
+            if (!attr.name.startsWith(hypenSepAppAttrPrefix)) {
+                toElement.attr(attr.name, attr.value); 
+                fromElement.removeAttr(attr.name);
+            }
+        }
+    }

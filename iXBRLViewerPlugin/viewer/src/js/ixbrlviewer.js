@@ -7,7 +7,7 @@ import { Viewer, DocumentTooLargeError } from "./viewer.js";
 import { Inspector } from "./inspector.js";
 import { initializeTheme } from './theme.js';
 import { TaxonomyNamer } from './taxonomynamer.js';
-import {FEATURE_GUIDE_LINK, FEATURE_REVIEW, FEATURE_SUPPORT_LINK, FEATURE_SURVEY_LINK} from "./util";
+import { FEATURE_GUIDE_LINK, FEATURE_REVIEW, FEATURE_SUPPORT_LINK, FEATURE_SURVEY_LINK, moveNonAppAttributes } from "./util";
 
 const featureFalsyValues = new Set([undefined, null, '', 'false', false]);
 
@@ -208,9 +208,11 @@ export class iXBRLViewer {
         else {
             docTitle = "Inline Viewer";
         }
-        if ($('html').attr("lang") === undefined) {
-            $('html').attr("lang", "en-US");
-        }
+
+        const iframeHtml = $(iframe).contents().find('html');
+        moveNonAppAttributes($('html'), iframeHtml);
+        $('html').attr('xmlns', 'http://www.w3.org/1999/xhtml');
+
 
         $('head')
             .children().not("script, style#ixv-style, link#ixv-style-skin, link#ixv-favicon").appendTo($(iframe).contents().find('head'));
@@ -224,10 +226,7 @@ export class iXBRLViewer {
         $('body').children().not("script").not('#ixv').not(iframeContainer).appendTo(iframeBody);
 
         /* Move all attributes on the body tag to the new body */
-        for (const bodyAttr of [...$('body').prop("attributes")]) {
-            iframeBody.attr(bodyAttr.name, bodyAttr.value); 
-            $('body').removeAttr(bodyAttr.name);
-        }
+        moveNonAppAttributes($('body'), iframeBody);
 
         /* Avoid any inline styles on the old body interfering with the inspector */
         $('body').removeAttr('style');

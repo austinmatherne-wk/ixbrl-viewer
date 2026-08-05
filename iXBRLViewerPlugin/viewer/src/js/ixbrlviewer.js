@@ -8,6 +8,7 @@ import { Inspector } from "./inspector.js";
 import { initializeTheme } from './theme.js';
 import { TaxonomyNamer } from './taxonomynamer.js';
 import { FEATURE_GUIDE_LINK, FEATURE_REVIEW, FEATURE_SUPPORT_LINK, FEATURE_SURVEY_LINK, USER_GUIDE_URL, moveNonAppAttributes } from "./util";
+import { perfAdd, perfClose, perfCount, perfLoaderRemoved, perfMark, perfOpen, perfSpan } from "./perf.js";
 
 const featureFalsyValues = new Set([undefined, null, '', 'false', false]);
 
@@ -312,8 +313,10 @@ export class iXBRLViewer {
     load() {
         const iv = this;
         const inspector = this.inspector;
-    
+
+        perfMark('load.start');
         this._loadRuntimeConfig().then((runtimeConfig) => {
+            perfMark('runtimeConfig.loaded');
             this.runtimeConfig = runtimeConfig;
             initializeTheme();
 
@@ -326,16 +329,22 @@ export class iXBRLViewer {
             }
 
             // Loading mask starts here
-            iv._loadInspectorHTML();
+            perfSpan('loadInspectorHTML', () => iv._loadInspectorHTML());
+            perfMark('loaderShown');
             let iframes = $();
 
             // We need to parse JSON first so that we can determine feature enablement before loading begins.
-            const taxonomyData = iv._getTaxonomyData();
-            const parsedTaxonomyData = taxonomyData && JSON.parse(taxonomyData);
+            // Read and parse are timed apart: the metadata runs to 47MB on some
+            // corpus fixtures, and reading .innerHTML off the script element is a
+            // different cost from parsing it.
+            const taxonomyData = perfSpan('taxonomyData.read', () => iv._getTaxonomyData());
+            perfCount('taxonomyData.chars', taxonomyData ? taxonomyData.length : 0);
+            const parsedTaxonomyData = perfSpan('taxonomyData.parse',
+                () => taxonomyData && JSON.parse(taxonomyData));
             const features = iv._mergeFeatures(parsedTaxonomyData?.features, this.runtimeConfig.features);
             iv.setFeatures(features, window.location.search);
 
-            const reportSet = new ReportSet(parsedTaxonomyData);
+            const reportSet = perfSpan('reportSet.construct', () => new ReportSet(parsedTaxonomyData));
             reportSet.taxonomyNamer = new TaxonomyNamer(new Map(Object.entries(this.runtimeConfig.taxonomyNames ?? {})));
 
             // Viewer disabled in stub viewer mode => redirect to first iXBRL document
@@ -351,8 +360,8 @@ export class iXBRLViewer {
             }
 
             if (!stubViewer) {
-                iframes = $(iv._reparentDocument());
-            } 
+                iframes = perfSpan('reparentDocument', () => $(iv._reparentDocument()));
+            }
             const ds = reportSet.reportFiles();
             let hasExternalIframe = false;
             for (let i = stubViewer ? 0 : 1; i < ds.length; i++) {
@@ -365,9 +374,14 @@ export class iXBRLViewer {
             }
 
             const progress = stubViewer ? 'Loading iXBRL Report' : 'Loading iXBRL Viewer';
+            perfMark('phase.loading.start');
             iv.setProgress(progress).then(() => {
+                perfMark('iframePoll.start');
                 /* Poll for iframe load completing - there doesn't seem to be a reliable event that we can use */
                 const timer = setInterval(() => {
+                    /* One count per 250ms tick, not per iframe: the tick total is
+                     * how much of this phase is pure polling latency. */
+                    perfCount('iframePoll.ticks');
                     let complete = true;
                     iframes.each((n, iframe) => {
                         const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
@@ -377,6 +391,7 @@ export class iXBRLViewer {
                     });
                     if (complete) {
                         clearInterval(timer);
+                        perfMark('phase.loading.end');
 
                         iframes.each((n, iframe) => {
                             const htmlNode = $(iframe).contents().find('html');
@@ -391,12 +406,19 @@ export class iXBRLViewer {
                             }
                         });
 
-                        const viewer = new Viewer(iv, iframes, reportSet);
+                        const viewer = perfSpan('viewer.construct', () => new Viewer(iv, iframes, reportSet));
                         iv.viewer = viewer
 
+                        perfOpen('viewer.initialize');
                         viewer.initialize()
-                            .then(() => inspector.initialize(reportSet, viewer))
                             .then(() => {
+                                perfClose('viewer.initialize');
+                                perfOpen('inspector.initialize');
+                                return inspector.initialize(reportSet, viewer);
+                            })
+                            .then(() => {
+                                perfClose('inspector.initialize');
+                                perfOpen('interact.configure');
                                 interact('#pane-left').resizable({
                                     edges: { left: false, right: ".resize", bottom: false, top: false},
                                     restrictEdges: {
@@ -420,7 +442,9 @@ export class iXBRLViewer {
                                 .on('resizeend', (event) =>
                                     $('#ixv').css("pointer-events", "auto")
                                 );
+                                perfClose('interact.configure');
                                 $('#ixv .loader').remove();
+                                perfLoaderRemoved();
 
                                 /* Focus on fact specified in URL fragment, if any */
                                 if (iv.options.showValidationWarningOnStart) {
@@ -432,6 +456,8 @@ export class iXBRLViewer {
                             .catch(err => {
                                 if (err instanceof DocumentTooLargeError) {
                                     $('#ixv .loader').remove();
+                                    perfMark('documentTooLarge');
+                                    perfLoaderRemoved();
                                     $('#inspector').addClass('failed-to-load');
                                 }
                                 else {
@@ -449,14 +475,21 @@ export class iXBRLViewer {
      * resolves once the message is actually displayed */
     setProgress(msg) {
         return new Promise((resolve, reject) => {
+            /* Pure waiting, not work: two frames per call, and there are five
+             * calls on a review-mode load.  Accumulated so the report can say how
+             * much of startup is the progress mechanism itself. */
+            const progressStart = performance.now();
             /* We need to do a double requestAnimationFrame, as we need to get the
              * message up before the ensuing thread-blocking work
-             * https://bugs.chromium.org/p/chromium/issues/detail?id=675795 
+             * https://bugs.chromium.org/p/chromium/issues/detail?id=675795
              */
             window.requestAnimationFrame(() => {
                 console.log(`%c [Progress] ${msg} `, 'background: #77d1c8; color: black;');
                 $('#ixv .loader .text').text(msg);
-                window.requestAnimationFrame(() => resolve());
+                window.requestAnimationFrame(() => {
+                    perfAdd('setProgress.wait', performance.now() - progressStart);
+                    resolve();
+                });
             });
         });
     }

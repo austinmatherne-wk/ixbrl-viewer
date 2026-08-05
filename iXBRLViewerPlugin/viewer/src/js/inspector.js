@@ -21,6 +21,7 @@ import { CalculationInspector } from './calculationInspector.js';
 import { ReportSetOutline } from './outline.js';
 import { DIMENSIONS_KEY, DocumentSummary, MEMBERS_KEY, PRIMARY_ITEMS_KEY, TOTAL_KEY } from './summary.js';
 import { getTheme, darkModeTheme, lightModeTheme } from './theme.js';
+import { perfAdd, perfClose, perfCount, perfMark, perfOpen, perfPush, perfSpan, perfWatchGenerator } from './perf.js';
 
 const SEARCH_PAGE_SIZE = 100
 const SECTION_LIST_SECTIONS = "#inspector .facts-by-group > .collapsible-section";
@@ -93,10 +94,16 @@ export class Inspector {
         const inspector = this;
         this._viewer = viewer;
         return new Promise(function (resolve, reject) {
+            perfMark('inspector.initialize.start');
             inspector._chart = new IXBRLChart();
             inspector._reportSet = reportSet;
             inspector.i18nInit().then((t) => {
-                
+                perfMark('inspector.i18nInit.done');
+
+                /* One span over the whole static-handler block rather than a
+                 * wrapper per bind: two dozen jQuery .on() calls that only make
+                 * sense as a unit, and on a 709ms filing they are not noise. */
+                perfOpen('inspector.bindStaticHandlers');
                 inspector.initializeCollapsibleSections();
                 inspector.initializeSectionListControls();
                 $("#inspector-tabs button").on("click", function () {
@@ -135,38 +142,46 @@ export class Inspector {
                 $('#zoom-out').on("click", () => inspector.zoomRelative(-1));
                 $('#zoom').on("change", (e) => inspector.zoomAbsolute($(e.currentTarget).val()));
 
-                inspector.initializeTooltips();
+                perfClose('inspector.bindStaticHandlers');
 
-                inspector.initializeReviewMode();
+                perfSpan('inspector.initializeTooltips', () => inspector.initializeTooltips());
 
+                perfSpan('inspector.initializeReviewMode', () => inspector.initializeReviewMode());
+
+                perfOpen('inspector.buildMenus');
                 inspector._optionsMenu = new Menu($("#display-options-menu"), {type: "static"});
                 inspector.buildDisplayOptionsMenu();
 
                 inspector._toolbarMenu = new Menu($("#toolbar-highlight-menu"));
                 inspector.buildToolbarHighlightMenu();
+                perfClose('inspector.buildMenus');
 
+                perfOpen('inspector.buildLanguages');
                 inspector.setDefaultDocumentLanguage();
                 inspector.buildDocumentLanguages();
                 inspector.buildHomeLink()
+                perfClose('inspector.buildLanguages');
 
 
-                $("#ixv").localize();
+                perfSpan('inspector.localize', () => $("#ixv").localize());
 
                 // Listen to messages posted to this window
                 $(window).on("message", (e) => inspector.handleMessage(e));
                 reportSet.viewerOptions = inspector._viewerOptions;
                 inspector.summary = new DocumentSummary(reportSet);
-                inspector.createSummary()
-                inspector.outline = new ReportSetOutline(reportSet);
-                inspector.initializeZoom();
+                perfSpan('inspector.createSummary', () => inspector.createSummary());
+                inspector.outline = perfSpan('inspector.buildOutline', () => new ReportSetOutline(reportSet));
+                perfSpan('inspector.initializeZoom', () => inspector.initializeZoom());
                 inspector._iv.setProgress(i18next.t("inspector.initializing")).then(() => {
-                    inspector._search = new ReportSearch(reportSet);
+                    perfMark('phase.inspectorInit.start');
+                    inspector._search = perfSpan('inspector.searchConstruct', () => new ReportSearch(reportSet));
                     inspector.handleFactDeepLink();
-                    inspector.rebuildViewer();
+                    perfSpan('inspector.rebuildViewer', () => inspector.rebuildViewer());
                     inspector.setupValidationReportIcon();
-                    inspector.initializeViewer();
-                    inspector.buildFactListByGroup();
-                    inspector.doInitialSelection();
+                    perfSpan('inspector.initializeViewer', () => inspector.initializeViewer());
+                    perfSpan('inspector.buildFactListByGroup', () => inspector.buildFactListByGroup());
+                    perfSpan('inspector.doInitialSelection', () => inspector.doInitialSelection());
+                    perfMark('phase.inspectorInit.end');
                     resolve();
                 });
             });
@@ -319,7 +334,10 @@ export class Inspector {
     }
 
     postLoadAsync() {
-        runGenerator(this._search.buildSearchIndex(() => this.searchReady()));
+        perfMark('inspector.postLoadAsync.start');
+        runGenerator(perfWatchGenerator(
+            this._search.buildSearchIndex(() => this.searchReady()),
+            'inspector.postLoadAsync.end'));
     }
 
     /*
@@ -419,9 +437,24 @@ export class Inspector {
                 .addClass("fact-list")
                 .appendTo(section);
 
+            /* Row building broken out from section building, per ticket 03, and
+             * recorded per section in build order: ticket 06 is chasing a ~3x
+             * difference between two same-sized sections of one filing, and a
+             * single total cannot show that.  One pair of now() calls per section,
+             * not per row. */
+            const rowStart = performance.now();
             this.addFactListByGroupFacts(body, group.facts, 0);
+            const rowMs = performance.now() - rowStart;
+            perfAdd('inspector.factListRows', rowMs);
+            /* addFactListByGroupFacts stops at FACTS_PER_GROUP - 1 rows and appends
+             * a "show more" button, so this is what was actually built. */
+            const rowsBuilt = Math.min(group.facts.length, FACTS_PER_GROUP - 1);
+            perfCount('factList.rowsBuilt', rowsBuilt);
+            perfCount('factList.factsInGroups', group.facts.length);
+            perfPush('factListRowsPerSection', [rowsBuilt, Math.round(rowMs * 100) / 100]);
         }
-        this.updateBulkToggleAvailability();
+        perfCount('factList.groups', groups.length);
+        perfSpan('inspector.updateBulkToggleAvailability', () => this.updateBulkToggleAvailability());
     }
 
     handleMessage(event) {

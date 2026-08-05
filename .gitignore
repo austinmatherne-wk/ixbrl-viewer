@@ -18,3 +18,7 @@ iXBRLViewerPlugin/viewer/src/less/generated/
 iXBRLViewerPlugin/_version.py
 /ixbrl-viewer*.tgz
 ixbrl_viewer.egg-info
+
+# Throwaway: measurement output from perf-harness/.  Reproducible by re-running
+# the harness, and its cpuprofiles run to megabytes.
+/perf-harness/out/

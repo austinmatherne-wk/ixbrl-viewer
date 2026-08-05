@@ -7,6 +7,10 @@ import { IXNode } from './ixnode.js';
 import { getIXHiddenLinkStyle, runGenerator, viewerUniqueId, HIGHLIGHT_COLORS } from './util.js';
 import { DocOrderIndex } from './docOrderIndex.js';
 import { MessageBox } from './messagebox.js';
+import {
+    PERF_DEEP, perfAdd, perfCount, perfDeepAdd, perfDeepCount, perfDeepNow, perfMark, perfSpan,
+    perfWatchGenerator,
+} from './perf.js';
 
 export class DocumentTooLargeError extends Error {}
 
@@ -56,19 +60,24 @@ export class Viewer {
     initialize() {
         return new Promise(async (resolve, reject) => {
             const viewer = this;
-            viewer._buildContinuationMaps();
+            perfSpan('viewer.buildContinuationMaps', () => viewer._buildContinuationMaps());
             viewer._checkContinuationCount()
                 .catch(err => { throw err })
                 .then(() => viewer._iv.setProgress("Pre-processing document"))
                 .then(() => {
+                    perfMark('phase.preProcess.start');
 
-                    viewer._iframes.each(function (docIndex) { 
+                    viewer._iframes.each(function (docIndex) {
                         $(this).data("selected", docIndex == viewer._currentDocumentIndex);
                         const reportIndex = $(this).data("report-index");
-                        viewer._preProcessiXBRL($(this).contents().find("body").get(0), reportIndex, docIndex, false);
+                        /* One span per document, never per node: _preProcessiXBRL
+                         * recurses over every node in the report. */
+                        perfSpan('viewer.preProcessiXBRL', () =>
+                            viewer._preProcessiXBRL($(this).contents().find("body").get(0), reportIndex, docIndex, false));
                     });
 
-                    viewer._setContinuationMaps();
+                    perfSpan('viewer.setContinuationMaps', () => viewer._setContinuationMaps());
+                    perfMark('phase.preProcess.end');
 
                     /* Call plugin promise for each document in turn */
                     (async function () {
@@ -78,13 +87,19 @@ export class Viewer {
                             if (viewer._iv.isReviewModeEnabled()) {
                                 await new Promise((resolve, _) => {
                                     viewer._iv.setProgress("Finding untagged numbers and dates").then(() => {
+                                        perfMark('phase.untagged.start');
                                         // Temporarily hide all children of "body" to avoid constant
                                         // re-layouts when wrapping untagged numbers
-                                        const children = $(body).children(':visible');
-                                        children.hide();
+                                        const children = perfSpan('viewer.untagged.hideChildren', () => {
+                                            const c = $(body).children(':visible');
+                                            c.hide();
+                                            return c;
+                                        });
                                         $(body).addClass("review");
-                                        viewer._wrapUntaggedNumbers($(body), docIndex, false);
-                                        children.show();
+                                        perfSpan('viewer.wrapUntaggedNumbers', () =>
+                                            viewer._wrapUntaggedNumbers($(body), docIndex, false));
+                                        perfSpan('viewer.untagged.showChildren', () => children.show());
+                                        perfMark('phase.untagged.end');
                                         resolve();
                                     });
                                 });
@@ -93,11 +108,13 @@ export class Viewer {
                     })()
                         .then(() => viewer._iv.setProgress("Preparing document") )
                         .then(() => {
-                            this._reportSet.setIXNodeMap(this._ixNodeMap);
-                            this._applyStyles();
-                            this._bindHandlers();
+                            perfMark('phase.prepare.start');
+                            perfSpan('viewer.setIXNodeMap', () => this._reportSet.setIXNodeMap(this._ixNodeMap));
+                            perfSpan('viewer.applyStyles', () => this._applyStyles());
+                            perfSpan('viewer.bindHandlers', () => this._bindHandlers());
                             this.scale = 1;
-                            this._addDocumentSetTabs();
+                            perfSpan('viewer.addDocumentSetTabs', () => this._addDocumentSetTabs());
+                            perfMark('phase.prepare.end');
                             resolve();
                         });
                 })
@@ -143,17 +160,25 @@ export class Viewer {
             }
             else {
                 const nn = n.getElementsByTagName("*");
+                let tests = 0;
                 for (var i = 0; i < nn.length; i++) {
+                    tests++;
                     if (getComputedStyle(nn[i]).getPropertyValue('display') === "block") {
                         wrapper = '<div>';
                         break;
                     }
                 }
+                /* Emitted once per call: the display test above is a forced style
+                 * resolution per descendant, and it only breaks early if it finds a
+                 * block. */
+                perfDeepCount('wrapNode.displayTests', tests);
             }
             $(n).wrap(wrapper);
+            perfDeepCount('wrapNode.wrapped');
             return [n.parentNode];
         }
         else {
+            perfDeepCount('wrapNode.reusedChildren');
             return Array.from(n.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);
         }
     }
@@ -269,48 +294,99 @@ export class Viewer {
         }
     }
 
+    /*
+     * INSTRUMENTATION (ticket 03).  A single CPU profile put 22.4s of 25.3s of
+     * total self time here, but could not say which statement spends it, because
+     * V8 folds frameless native calls into the caller's self time.  So the total
+     * is accumulated here - once per fact, never per node - and the body is split
+     * into three timed segments at ?ixvperf=deep.  The wrapper is a separate
+     * function purely so the measured body stays byte-identical to master, which
+     * ticket 05's ablation runs depend on.
+     */
     _findOrCreateWrapperNode(domNode, inHidden) {
+        const fcwnStart = performance.now();
+        try {
+            return this._findOrCreateWrapperNodeInner(domNode, inHidden);
+        }
+        finally {
+            perfAdd('viewer.findOrCreateWrapperNode', performance.now() - fcwnStart);
+        }
+    }
+
+    _findOrCreateWrapperNodeInner(domNode, inHidden) {
         const v = this;
 
         if (inHidden) {
+            perfDeepCount('fcwn.inHidden');
             return $(domNode).addClass("ixbrl-element-hidden");
         }
+        perfDeepCount('fcwn.visible');
 
         /* Is the element the only significant content within a <td> or <th> ? If
          * so, use that as the wrapper element.
          * Check for 'display: table-cell' to avoid using hidden cells */
+        const cellTestStart = perfDeepNow();
         const tableNode = domNode.closest("td,th");
         let nodes;
         const innerText = $(domNode).text();
+        if (PERF_DEEP) {
+            perfCount('fcwn.innerTextChars', innerText.length);
+            /* A non-null tableNode is exactly the condition under which the
+             * getComputedStyle below runs, so this is the forced style resolution
+             * count for this segment. */
+            if (tableNode !== null) {
+                perfCount('fcwn.cellCandidates');
+            }
+        }
         if (tableNode !== null && getComputedStyle(tableNode).display === 'table-cell' && innerText.length > 0) {
             // Use indexOf rather than a single regex because innerText may
-            // be too long for the regex engine 
+            // be too long for the regex engine
             const outerText = $(tableNode).text();
+            perfDeepCount('fcwn.cellTextChars', outerText.length);
             const start = outerText.indexOf(innerText);
             const wrapper = outerText.substring(0, start) + outerText.substring(start + innerText.length);
             if (!/[0-9A-Za-z]/.test(wrapper)) {
                 nodes = [ tableNode ];
-            } 
+                perfDeepCount('fcwn.cellWrapperUsed');
+            }
         }
+        perfDeepAdd('fcwn.cellTest', perfDeepNow() - cellTestStart);
         /* Otherwise, insert a <span> or <div> as wrapper */
         if (nodes === undefined) {
+            const wrapStart = perfDeepNow();
             nodes = this._wrapNode(domNode);
+            perfDeepAdd('fcwn.wrapNode', perfDeepNow() - wrapStart);
+            perfDeepCount('fcwn.wrapNodeCalls');
         }
+        const scanStart = perfDeepNow();
         const allNodes = [];
+        let scanned = 0;
+        let absolute = 0;
         for (const node of nodes) {
             let hasSubNodes = false;
             allNodes.push(node);
             node.classList.add("ixbrl-element");
-            for (const subNode of node.querySelectorAll("*")) { 
-                if (getComputedStyle(subNode).getPropertyValue('position') === "absolute") { 
+            for (const subNode of node.querySelectorAll("*")) {
+                /* Local integers only - this loop runs tens of thousands of times
+                 * per document on the corpus's larger filings. */
+                scanned++;
+                if (getComputedStyle(subNode).getPropertyValue('position') === "absolute") {
                     subNode.classList.add("ixbrl-sub-element");
                     allNodes.push(subNode);
                     hasSubNodes = true;
-                } 
+                    absolute++;
+                }
             }
             if (hasSubNodes) {
                 node.classList.add("ixbrl-contains-absolute");
             }
+        }
+        if (PERF_DEEP) {
+            perfAdd('fcwn.subNodeScan', perfDeepNow() - scanStart);
+            /* One getComputedStyle per scanned descendant: the count that makes
+             * forced style resolution a candidate cost centre in its own right. */
+            perfCount('fcwn.subNodesScanned', scanned);
+            perfCount('fcwn.absoluteSubNodes', absolute);
         }
         return $(allNodes);
     }
@@ -332,9 +408,14 @@ export class Viewer {
         const nextContinuationMap = {};
         // map of items in default target document to all their continuations
         const itemContinuationMap = {};
+        /* find("body *") materialises every element of the report - 203MB on the
+         * largest corpus fixture - before any phase mark exists on master.  Counted
+         * with a captured local, emitted once. */
+        let walked = 0;
         this._iframes.each((n, iframe) => {
             const reportIndex = $(iframe).data("report-index");
             $(iframe).contents().find("body *").each((m, node) => {
+                walked++;
                 const name = localName(node.nodeName).toUpperCase();
                 if (['NONNUMERIC', 'NONFRACTION', 'FOOTNOTE', 'CONTINUATION'].includes(name) && node.hasAttribute('id')) {
                     const nodeId = viewerUniqueId(reportIndex, node.getAttribute('id'));
@@ -348,6 +429,8 @@ export class Viewer {
                 }
             });
         });
+
+        perfCount('continuationMaps.elementsWalked', walked);
 
         // Map of continuation IDs to list of (default target doc) items that
         // they're continuations of
@@ -885,7 +968,8 @@ export class Viewer {
     }
 
     postLoadAsync() {
-        runGenerator(this.postProcess());
+        perfMark('viewer.postLoadAsync.start');
+        runGenerator(perfWatchGenerator(this.postProcess(), 'viewer.postLoadAsync.end'));
     }
 
 }

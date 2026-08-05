@@ -22,6 +22,11 @@
 //   CONTROL=dir       repo checkout of a second build to measure as a paired arm
 //                     on a second port, same session, alternating runs.  Its
 //                     dist/ixbrlviewer.dev.js must already be built.
+//   ABLATE_ARMS=a,b   ticket 05's ablation arms, measured as N paired arms off
+//                     *one* build and one server, differing only by ?ixvablate=,
+//                     alternating run by run.  Arms: none (unablated), noscan,
+//                     nostyle, styleonly - see ABLATE in perf.js.  Mutually
+//                     exclusive with CONTROL.
 //   PROFILE=1         write a .cpuprofile for run 0 of each arm.
 //   FIXTURE_ROOT=dir  where the fixture dirs live.  Default <repo>/.scratch/
 //                     startup-slowness, which in a worktree is NOT the checkout
@@ -42,7 +47,12 @@ const RUNS = Number(process.env.RUNS || 5);
 const TIERS = (process.env.TIERS || '1,4').split(',').map(Number);
 const LEVEL = process.env.LEVEL || 'phase';
 const CONTROL = process.env.CONTROL || null;
+const ABLATE_ARMS = process.env.ABLATE_ARMS ? process.env.ABLATE_ARMS.split(',') : null;
 const PORT = Number(process.env.PORT || 8910);
+if (ABLATE_ARMS && CONTROL) {
+    console.error('ABLATE_ARMS and CONTROL are mutually exclusive');
+    process.exit(1);
+}
 
 /* A git worktree has no node_modules of its own, so fall back to the checkout the
  * fixtures live in - it has to be a checkout of this repo for FIXTURE_ROOT to
@@ -256,13 +266,19 @@ async function measure(browser, armObj, fx, tier, runIndex) {
     if (armObj.hasPerf) {
         params.push(`ixvperf=${armObj.level}`);
     }
+    /* Omitted for the unablated arm so its URL is exactly what every other
+     * ticket measures, and a stray ablation cannot hide in a baseline. */
+    if (armObj.ablate !== undefined && armObj.ablate !== 'none') {
+        params.push(`ixvablate=${armObj.ablate}`);
+    }
     if (process.env.REVIEW === '1') {
         params.push('review=1');
     }
     const url = `${base}/${fx.slug}/${fx.entry}` + (params.length ? `?${params.join('&')}` : '');
     const timeout = timeoutFor(fx, tier);
 
-    const out = { slug: fx.slug, tier, arm, armLevel: armObj.level, run: runIndex, url, timeout };
+    const out = { slug: fx.slug, tier, arm, armLevel: armObj.level,
+        ablate: armObj.ablate ?? 'none', run: runIndex, url, timeout };
     await page.evaluateOnNewDocument(installExternalObserver);
     const wallStart = Date.now();
     await page.goto(url, { waitUntil: 'load', timeout });
@@ -440,7 +456,12 @@ async function main() {
         name, build: buildInfo(repo), hasPerf, level,
         instrumented: hasPerf && level !== 'off', port,
     });
-    const arms = [arm('instrumented', REPO, true, LEVEL, PORT)];
+    /* Ablation arms are one build, one server, one bundle: only the query string
+     * differs, so a delta between them cannot be a build-to-build difference.
+     * They share a serve root, wired up after the arms are built. */
+    const arms = ABLATE_ARMS
+        ? ABLATE_ARMS.map(a => ({ ...arm(`ablate-${a}`, REPO, true, LEVEL, PORT), ablate: a }))
+        : [arm('instrumented', REPO, true, LEVEL, PORT)];
     if (CONTROL) {
         arms.push(arm('control', path.resolve(CONTROL),
             process.env.CONTROL_INSTRUMENTED === '1',
@@ -452,9 +473,19 @@ async function main() {
     }
 
     const servers = [];
+    const roots = [];
+    /* Arms sharing a port share a serve root and a server - the ablation case,
+     * where every arm is the same build and only the query string differs.  One
+     * server also removes any chance of a per-server difference being read as an
+     * ablation delta. */
     for (const arm of arms) {
-        arm.root = serveRoot(arm.build, all);
+        const shared = arms.find(a => a.port === arm.port && a.root !== undefined);
+        arm.root = shared?.root ?? serveRoot(arm.build, all);
         arm.base = `http://127.0.0.1:${arm.port}`;
+        if (shared !== undefined) {
+            continue;
+        }
+        roots.push(arm.root);
         servers.push(spawn(path.join(NODE_MODULES, '.bin', 'http-server'),
             /* Loopback only, deliberately: these fixtures are third-party filings. */
             [arm.root, '-p', String(arm.port), '-a', '127.0.0.1', '--silent'],
@@ -481,7 +512,8 @@ async function main() {
             model: os.cpus()[0]?.model, totalMemBytes: os.totalmem() },
         chrome: await browser.version(),
         arms: arms.map(a => ({ name: a.name, port: a.port, level: a.level,
-            hasPerf: a.hasPerf, instrumented: a.instrumented, ...a.build })),
+            hasPerf: a.hasPerf, instrumented: a.instrumented, ablate: a.ablate ?? 'none',
+            ...a.build })),
         results: [],
     };
 
@@ -523,6 +555,7 @@ async function main() {
                     tier,
                     arm: arm.name,
                     armLevel: arm.level,
+                    ablate: arm.ablate ?? 'none',
                     fixture: { mode: fx.mode, entry: fx.entry, source_bytes: fx.source_bytes,
                         stub_bytes: fx.stub_bytes ?? null, docs: fx.sources?.length ?? null },
                     ok: runs.length,
@@ -540,8 +573,8 @@ async function main() {
     for (const s of servers) {
         s.kill();
     }
-    for (const arm of arms) {
-        fs.rmSync(arm.root, { recursive: true, force: true });
+    for (const root of roots) {
+        fs.rmSync(root, { recursive: true, force: true });
     }
 
     /* Console summary: the two windows only.  Everything else is in the JSON,

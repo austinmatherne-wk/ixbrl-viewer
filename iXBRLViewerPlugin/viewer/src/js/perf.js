@@ -32,6 +32,35 @@ const LEVEL = new URLSearchParams(window.location.search).get('ixvperf') ?? 'pha
 const ON = LEVEL !== 'off';
 export const PERF_DEEP = ON && LEVEL === 'deep';
 
+/*
+ * Ablation arm, chosen with ?ixvablate= (ticket 05).  ABLATED BUILDS CHANGE
+ * BEHAVIOUR AND MUST NEVER BE MERGED.
+ *
+ * Ticket 05 has to attribute _findOrCreateWrapperNode's descendant scan to a
+ * statement, and the map's evidence bar wants an ablation delta larger than the
+ * measured spread.  Selecting the arm at *runtime* off a URL parameter rather
+ * than building a branch per ablation means every arm is the same bundle bytes,
+ * so a delta cannot be a build-to-build difference - and the harness can
+ * alternate all four arms inside one session, which is the strongest pairing
+ * available.
+ *
+ *   none       (default)  unablated.  The inner loop is byte-identical to master.
+ *   noscan                the descendant scan does not happen at all.
+ *   nostyle               querySelectorAll and the walk happen; no style is
+ *                         resolved.  Against noscan: the traversal's own cost.
+ *   styleonly             the walk and getComputedStyle happen, but the result is
+ *                         discarded, so no sub-element is classed or collected.
+ *                         Against nostyle: forced style resolution alone, with
+ *                         all downstream work held constant.  Against none: what
+ *                         the collected sub-elements cost everything after.
+ *   batched               an ordering control rather than an ablation: every read
+ *                         and write the baseline does still happens and the output
+ *                         is the same, but all style is resolved before any class
+ *                         is applied.  Against none: what the baseline pays purely
+ *                         for interleaving its style writes with its style reads.
+ */
+export const ABLATE = new URLSearchParams(window.location.search).get('ixvablate') ?? 'none';
+
 const now = () => performance.now();
 
 /* Both post-load passes must finish before the load counts as drained. */
@@ -39,6 +68,9 @@ const DRAIN_KEYS = ['viewer.postLoadAsync.end', 'inspector.postLoadAsync.end'];
 
 const state = {
     level: LEVEL,
+    /* Which ablation arm produced this run, so a JSON of results is
+     * self-describing and an arm can never be mistaken for a baseline. */
+    ablate: ABLATE,
     /* name -> ms since nav start.  Last write wins; anything that happens more
      * than once belongs in spans, not here. */
     marks: {},

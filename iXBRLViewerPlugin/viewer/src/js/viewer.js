@@ -8,8 +8,8 @@ import { getIXHiddenLinkStyle, runGenerator, viewerUniqueId, HIGHLIGHT_COLORS } 
 import { DocOrderIndex } from './docOrderIndex.js';
 import { MessageBox } from './messagebox.js';
 import {
-    PERF_DEEP, perfAdd, perfCount, perfDeepAdd, perfDeepCount, perfDeepNow, perfMark, perfSpan,
-    perfWatchGenerator,
+    ABLATE, PERF_DEEP, perfAdd, perfCount, perfDeepAdd, perfDeepCount, perfDeepNow, perfMark,
+    perfSpan, perfWatchGenerator,
 } from './perf.js';
 
 export class DocumentTooLargeError extends Error {}
@@ -362,23 +362,112 @@ export class Viewer {
         const allNodes = [];
         let scanned = 0;
         let absolute = 0;
-        for (const node of nodes) {
-            let hasSubNodes = false;
-            allNodes.push(node);
-            node.classList.add("ixbrl-element");
-            for (const subNode of node.querySelectorAll("*")) {
-                /* Local integers only - this loop runs tens of thousands of times
-                 * per document on the corpus's larger filings. */
-                scanned++;
-                if (getComputedStyle(subNode).getPropertyValue('position') === "absolute") {
-                    subNode.classList.add("ixbrl-sub-element");
-                    allNodes.push(subNode);
-                    hasSubNodes = true;
-                    absolute++;
+        /* The ablation arm is tested once per fact, never per node, so the
+         * unablated loop below stays byte-identical to master.  See ABLATE in
+         * perf.js for what each arm removes; all of them CHANGE BEHAVIOUR. */
+        if (ABLATE === 'none') {
+            for (const node of nodes) {
+                let hasSubNodes = false;
+                allNodes.push(node);
+                node.classList.add("ixbrl-element");
+                for (const subNode of node.querySelectorAll("*")) {
+                    /* Local integers only - this loop runs tens of thousands of times
+                     * per document on the corpus's larger filings. */
+                    scanned++;
+                    if (getComputedStyle(subNode).getPropertyValue('position') === "absolute") {
+                        subNode.classList.add("ixbrl-sub-element");
+                        allNodes.push(subNode);
+                        hasSubNodes = true;
+                        absolute++;
+                    }
+                }
+                if (hasSubNodes) {
+                    node.classList.add("ixbrl-contains-absolute");
                 }
             }
-            if (hasSubNodes) {
+        }
+        else if (ABLATE === 'styleonly') {
+            /* Resolve style exactly as the baseline does, then throw the answer
+             * away: same querySelectorAll, same getComputedStyle, same property
+             * read and string compare, but nothing is classed or collected.  So
+             * against nostyle this isolates forced style resolution, and against
+             * the baseline it prices what the collected sub-elements cost the
+             * rest of the load. */
+            for (const node of nodes) {
+                allNodes.push(node);
+                node.classList.add("ixbrl-element");
+                for (const subNode of node.querySelectorAll("*")) {
+                    scanned++;
+                    if (getComputedStyle(subNode).getPropertyValue('position') === "absolute") {
+                        absolute++;
+                    }
+                }
+            }
+        }
+        else if (ABLATE === 'batched') {
+            /* Not an ablation but an ordering control, and the one arm that
+             * distinguishes "this many getComputedStyle calls is inherently
+             * expensive" from "these calls are expensive because a class is
+             * written between them".  Every read and every write the baseline
+             * performs still happens and allNodes ends up identical - only the
+             * interleaving is gone: all style is resolved first, then the classes
+             * are applied.  Sound only because no rule keyed on .ixbrl-element or
+             * .ixbrl-sub-element affects 'position' (the position: absolute rules
+             * in viewer.less all key on div.ixbrl-table-handle), so hoisting the
+             * writes past the reads cannot change a single answer.
+             *
+             * One residual difference, which is why this stays a diagnostic and
+             * not a proposed fix: where _wrapNode returns several nodes, allNodes
+             * comes out grouped rather than interleaved.  Same members, different
+             * order.  For the single-node case - which is every call whose wrapper
+             * is one span, div or table cell - the order is identical too. */
+            const subLists = [];
+            for (const node of nodes) {
+                allNodes.push(node);
+                subLists.push(node.querySelectorAll("*"));
+            }
+            const absoluteNodes = [];
+            const containers = [];
+            for (let i = 0; i < nodes.length; i++) {
+                let hasSubNodes = false;
+                for (const subNode of subLists[i]) {
+                    scanned++;
+                    if (getComputedStyle(subNode).getPropertyValue('position') === "absolute") {
+                        absoluteNodes.push(subNode);
+                        hasSubNodes = true;
+                        absolute++;
+                    }
+                }
+                if (hasSubNodes) {
+                    containers.push(nodes[i]);
+                }
+            }
+            for (const node of nodes) {
+                node.classList.add("ixbrl-element");
+            }
+            for (const subNode of absoluteNodes) {
+                subNode.classList.add("ixbrl-sub-element");
+                allNodes.push(subNode);
+            }
+            for (const node of containers) {
                 node.classList.add("ixbrl-contains-absolute");
+            }
+        }
+        else if (ABLATE === 'nostyle') {
+            /* Walk every descendant, resolve no style. */
+            for (const node of nodes) {
+                allNodes.push(node);
+                node.classList.add("ixbrl-element");
+                for (const subNode of node.querySelectorAll("*")) {
+                    scanned++;
+                }
+            }
+        }
+        else {
+            /* noscan: the descendant scan does not happen at all. */
+            for (const node of nodes) {
+                allNodes.push(node);
+                node.classList.add("ixbrl-element");
             }
         }
         if (PERF_DEEP) {

@@ -58,6 +58,21 @@ export const PERF_DEEP = ON && LEVEL === 'deep';
  *                         is the same, but all style is resolved before any class
  *                         is applied.  Against none: what the baseline pays purely
  *                         for interleaving its style writes with its style reads.
+ *
+ * Ticket 06's arms, on the fact-list row path rather than the document walk.
+ * factListRow() calls f.isHTMLHidden() once per row, and that reads layout
+ * (jQuery ':hidden') and computed style (css('color')) on wrapper nodes inside the
+ * *report* iframe, interleaved with the row appends that dirty the inspector
+ * document - the same shape of thrash as `none` above, in a second place:
+ *
+ *   rownohide             the isHTMLHidden() test does not happen at all, so no
+ *                         row resolves style or layout.  Against none: the whole
+ *                         cost of the test, tag output aside.
+ *   rowprehide            an ordering control, not an ablation: every test still
+ *                         runs and every tag is still emitted, but a section's
+ *                         tests are all resolved before any of its rows is built.
+ *                         Against none: what interleaving costs.  Against
+ *                         rownohide: what the reads cost once uninterleaved.
  */
 export const ABLATE = new URLSearchParams(window.location.search).get('ixvablate') ?? 'none';
 

@@ -21,7 +21,7 @@ import { CalculationInspector } from './calculationInspector.js';
 import { ReportSetOutline } from './outline.js';
 import { DIMENSIONS_KEY, DocumentSummary, MEMBERS_KEY, PRIMARY_ITEMS_KEY, TOTAL_KEY } from './summary.js';
 import { getTheme, darkModeTheme, lightModeTheme } from './theme.js';
-import { perfAdd, perfClose, perfCount, perfMark, perfOpen, perfPush, perfSpan, perfWatchGenerator } from './perf.js';
+import { ABLATE, PERF_DEEP, perfAdd, perfClose, perfCount, perfDeepNow, perfMark, perfOpen, perfPush, perfSpan, perfWatchGenerator } from './perf.js';
 
 const SEARCH_PAGE_SIZE = 100
 const SECTION_LIST_SECTIONS = "#inspector .facts-by-group > .collapsible-section";
@@ -39,6 +39,38 @@ const SEARCH_FILTER_MULTISELECTS = {
   factValueFilter: "search-filter-fact-value",
   mandatoryFactsFilter: "search-filter-mandatory-facts",
 };
+
+/*
+ * THROWAWAY, ticket 06: per-row segment timings and volumes, accumulated for the
+ * section currently being built and pushed out per section by
+ * buildFactListByGroup().  A single total cannot show the ~3x difference between
+ * two 19-row sections of one filing, which is what this ticket is chasing.
+ *
+ * factListRow() runs once per rendered row - 178 on Aviva, ~1000 on the SEC pair
+ * - so a handful of performance.now() calls inside it is affordable in a way it
+ * never is inside the document walk.  Everything here is gated on PERF_DEEP.
+ */
+const ROW_SEG_KEYS = ['create', 'title', 'datatype', 'period', 'aspects', 'tags',
+    'htmlHidden', 'aspectsRendered', 'titleChars', 'htmlHiddenTested',
+    'htmlHiddenTrue', 'htmlHiddenWrapperNodes', 'hiddenRows'];
+
+let rowSeg = null;
+
+function rowSegReset() {
+    rowSeg = {};
+    for (const k of ROW_SEG_KEYS) {
+        rowSeg[k] = 0;
+    }
+}
+
+/* Round the times, leave the volumes alone, so the JSON stays readable. */
+function rowSegSnapshot() {
+    const out = {};
+    for (const [k, v] of Object.entries(rowSeg)) {
+        out[k] = Number.isInteger(v) ? v : Math.round(v * 100) / 100;
+    }
+    return out;
+}
 
 export class Inspector {
     constructor(iv) {
@@ -377,6 +409,18 @@ export class Inspector {
 
     addFactListByGroupFacts(container, facts, next) {
         $(".show-more", container).remove();
+        /* Ticket 06's ordering control: resolve every style and layout read this
+         * batch of rows will make *before* building any of them, so the same reads
+         * and the same writes happen with nothing interleaved.  See ABLATE in
+         * perf.js. */
+        if (ABLATE === 'rowprehide') {
+            this._preResolvedHTMLHidden = new Map();
+            for (let i = next; i < facts.length && i - next < FACTS_PER_GROUP - 1; i++) {
+                if (!facts[i].isHidden()) {
+                    this._preResolvedHTMLHidden.set(facts[i], facts[i].isHTMLHidden());
+                }
+            }
+        }
         for (let i = next; i < facts.length; i++) {
             if (i - next >= FACTS_PER_GROUP - 1) {
                 $("<button></button>")
@@ -388,7 +432,9 @@ export class Inspector {
             }
             this.factListRow(facts[i]).appendTo(container);
         }
-
+        /* Only this batch's rows may read from it, or a later caller of
+         * factListRow() (search results, footnotes) picks up a stale entry. */
+        this._preResolvedHTMLHidden = undefined;
     }
 
     buildFactListByGroup() {
@@ -442,6 +488,9 @@ export class Inspector {
              * difference between two same-sized sections of one filing, and a
              * single total cannot show that.  One pair of now() calls per section,
              * not per row. */
+            if (PERF_DEEP) {
+                rowSegReset();
+            }
             const rowStart = performance.now();
             this.addFactListByGroupFacts(body, group.facts, 0);
             const rowMs = performance.now() - rowStart;
@@ -452,6 +501,13 @@ export class Inspector {
             perfCount('factList.rowsBuilt', rowsBuilt);
             perfCount('factList.factsInGroups', group.facts.length);
             perfPush('factListRowsPerSection', [rowsBuilt, Math.round(rowMs * 100) / 100]);
+            if (PERF_DEEP) {
+                /* Ticket 06 needs the breakdown per section, not per filing: two
+                 * 19-row sections of Aviva differ ~3x and a total cannot show it. */
+                perfPush('factListRowSegmentsPerSection',
+                    { rowsBuilt, ms: Math.round(rowMs * 100) / 100,
+                      elr: group.elr, ...rowSegSnapshot() });
+            }
         }
         perfCount('factList.groups', groups.length);
         perfSpan('inspector.updateBulkToggleAvailability', () => this.updateBulkToggleAvailability());
@@ -745,7 +801,33 @@ export class Inspector {
         }
     }
 
+    /*
+     * THROWAWAY, ticket 06.  f.isHTMLHidden() reaches ixNode.htmlHidden(), which
+     * is a jQuery ':hidden' test (a layout read) plus a css('color') test (a
+     * computed-style read) over the fact's wrapper nodes - and those nodes are in
+     * the *report* iframe, while the row being built is appended to the inspector
+     * document.  One such read per row, interleaved with the appends that dirty
+     * style, is ticket 05's pattern in a second place.  See ABLATE in perf.js.
+     */
+    _rowHTMLHidden(f) {
+        if (ABLATE === 'rownohide') {
+            return false;
+        }
+        if (PERF_DEEP && rowSeg !== null) {
+            rowSeg.htmlHiddenTested++;
+            rowSeg.htmlHiddenWrapperNodes += f.ixNode?.wrapperNodes?.length ?? 0;
+        }
+        if (ABLATE === 'rowprehide') {
+            const pre = this._preResolvedHTMLHidden?.get(f);
+            if (pre !== undefined) {
+                return pre;
+            }
+        }
+        return f.isHTMLHidden();
+    }
+
     factListRow(f) {
+        const t0 = perfDeepNow();
         const row = $('<button class="fact-list-item"></button>')
             // soft focus - highlight the fact, but don't close the search results
             .on("click", () => this.selectItem(f.vuid, undefined, undefined, true))
@@ -762,40 +844,73 @@ export class Inspector {
             .on("mouseenter", () => this._viewer.linkedHighlightFact(f))
             .on("mouseleave", () => this._viewer.clearLinkedHighlightFact(f))
             .data('ivid', f.vuid);
-        this._setLabelWithLang($('<div class="title"></div>'), f.getLabelOrNameAndLang("std"))
+        const t1 = perfDeepNow();
+        const titleLabel = f.getLabelOrNameAndLang("std");
+        this._setLabelWithLang($('<div class="title"></div>'), titleLabel)
             .on("click", () => this.selectItem(f.vuid))
             .appendTo(row);
+        const t2 = perfDeepNow();
         const dt = f.concept().dataType();
         if (dt !== undefined) {
            $('<div class="datatype"></div>')
             .text(dt.label())
             .appendTo(row);
         }
+        const t3 = perfDeepNow();
         $('<div class="dimension"></div>')
             .text(f.period().toString())
             .appendTo(row);
 
+        const t4 = perfDeepNow();
+        let aspectsRendered = 0;
         for (const aspect of f.aspects()) {
             if (aspect.isTaxonomyDefined() && !aspect.isNil()) {
                 this._setLabelWithLang($('<div class="dimension"></div>'), aspect.valueLabelAndLang())
                     .appendTo(row);
+                aspectsRendered++;
             }
         }
+        const t5 = perfDeepNow();
         const tags = $("<div></div>").addClass("block-list-item-tags").appendTo(row);
         if (f.targetDocument() !== null) {
             $('<div class="hidden"></div>')
                 .text(f.targetDocument())
                 .appendTo(tags);
         }
+        let hiddenRow = 0;
+        let htmlHiddenMs = 0;
+        let htmlHidden = false;
         if (f.isHidden()) {
+            hiddenRow = 1;
             $('<div class="hidden"></div>')
                 .text(i18next.t("search.hiddenFact"))
                 .appendTo(tags);
         }
-        else if (f.isHTMLHidden()) {
-            $('<div class="hidden"></div>')
-                .text(i18next.t("search.concealedFact"))
-                .appendTo(tags);
+        else {
+            /* Timed on its own, inside the tags segment: this one call is the
+             * only style or layout read in the whole row (ticket 06). */
+            const hStart = perfDeepNow();
+            htmlHidden = this._rowHTMLHidden(f);
+            htmlHiddenMs = perfDeepNow() - hStart;
+            if (htmlHidden) {
+                $('<div class="hidden"></div>')
+                    .text(i18next.t("search.concealedFact"))
+                    .appendTo(tags);
+            }
+        }
+        if (PERF_DEEP && rowSeg !== null) {
+            const t6 = perfDeepNow();
+            rowSeg.create += t1 - t0;
+            rowSeg.title += t2 - t1;
+            rowSeg.datatype += t3 - t2;
+            rowSeg.period += t4 - t3;
+            rowSeg.aspects += t5 - t4;
+            rowSeg.tags += t6 - t5;
+            rowSeg.htmlHidden += htmlHiddenMs;
+            rowSeg.aspectsRendered += aspectsRendered;
+            rowSeg.titleChars += titleLabel.label?.length ?? 0;
+            rowSeg.hiddenRows += hiddenRow;
+            rowSeg.htmlHiddenTrue += htmlHidden ? 1 : 0;
         }
         return row;
     }

@@ -364,8 +364,14 @@ export class Viewer {
         let absolute = 0;
         /* The ablation arm is tested once per fact, never per node, so the
          * unablated loop below stays byte-identical to master.  See ABLATE in
-         * perf.js for what each arm removes; all of them CHANGE BEHAVIOUR. */
-        if (ABLATE === 'none') {
+         * perf.js for what each arm removes; all of them CHANGE BEHAVIOUR.
+         *
+         * Every arm that is not one of *this* hot path's own runs the baseline
+         * loop.  It must be spelled out: ticket 06 added arms on the fact-list row
+         * path, and while the chain below ended in a bare `else` meaning noscan,
+         * those arms silently ablated this scan as well - which took 19s off Aviva
+         * and very nearly passed for a finding. */
+        if (!['noscan', 'nostyle', 'styleonly', 'batched'].includes(ABLATE)) {
             for (const node of nodes) {
                 let hasSubNodes = false;
                 allNodes.push(node);
@@ -464,7 +470,9 @@ export class Viewer {
             }
         }
         else {
-            /* noscan: the descendant scan does not happen at all. */
+            /* noscan, and only noscan: the descendant scan does not happen at all.
+             * Named explicitly in the test above, so a typo or another path's arm
+             * lands on the baseline rather than here. */
             for (const node of nodes) {
                 allNodes.push(node);
                 node.classList.add("ixbrl-element");

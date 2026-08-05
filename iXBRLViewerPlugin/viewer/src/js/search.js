@@ -1,6 +1,7 @@
 // See COPYRIGHT.md for copyright information
 
 import lunr from 'lunr'
+import { perfAdd, perfCount, perfNow, perfSpan } from './perf.js';
 
 export class ReportSearch {
     constructor(reportSet) {
@@ -8,11 +9,27 @@ export class ReportSearch {
         this.ready = false;
     }
 
+    /*
+     * Ticket 11 instrumentation.  Three sub-phases, accumulated across the
+     * generator's yields for the same reason viewer.postProcess()'s passes are:
+     * runGenerator resumes on setTimeout(0), so elapsed time here is shared with
+     * the viewer's drain pass and is not this pass's own work.
+     */
     * buildSearchIndex(doneCallback) {
         var docs = [];
         var dims = {};
-        var facts = this._reportSet.facts();
+        /* Uncached full scan over every report - ticket 10 counted the calls; this
+         * prices the one the drain pays. */
+        var facts = perfSpan('drain.search.facts', () => this._reportSet.facts());
+        perfCount('drain.search.factCount', facts.length);
         this.periods = {};
+        let acc = 0;
+        /* Ticket 11: the drain's elapsed time exceeds the two passes' work by up
+         * to half, and a yield is where that difference is spent - so the count is
+         * the denominator the gap has to be divided by before it can be called a
+         * per-slice scheduling cost rather than work. */
+        let yields = 0;
+        let t = perfNow();
         // Add hidden facts to index later, so that they appear later in the
         // default search
         for (const hidden of [false, true]) {
@@ -54,10 +71,19 @@ export class ReportSearch {
                 }
 
                 if (i % 100 === 0) {
+                    acc += perfNow() - t;
                     yield;
+                    yields++;
+                    t = perfNow();
                 }
             }
         }
+        /* Term 1a: building the plain documents - label, dimension and reference
+         * resolution per fact, before lunr sees anything. */
+        perfAdd('drain.search.docs', acc + perfNow() - t);
+        perfCount('drain.search.docsBuilt', docs.length);
+        acc = 0;
+        t = perfNow();
         const builder = new lunr.Builder();
         builder.pipeline.add(
           lunr.trimmer,
@@ -84,12 +110,19 @@ export class ReportSearch {
         for (const [i, doc] of docs.entries()) {
             builder.add(doc);
             if (i % 100 === 0) {
+                acc += perfNow() - t;
                 yield;
+                yields++;
+                t = perfNow();
             }
         }
-        this._searchIndex = builder.build();
+        /* Term 1b: tokenising and inverting.  Includes the builder's own setup
+         * above, which is a fixed dozen field declarations. */
+        perfAdd('drain.search.lunrAdd', acc + perfNow() - t);
+        perfCount('drain.search.yields', yields);
+        this._searchIndex = perfSpan('drain.search.lunrBuild', () => builder.build());
         this.ready = true;
-        doneCallback();
+        perfSpan('drain.search.doneCallback', doneCallback);
     }
 
     visibilityFilter(s, item) {

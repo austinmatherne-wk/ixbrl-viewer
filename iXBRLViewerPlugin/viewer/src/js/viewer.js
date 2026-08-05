@@ -9,7 +9,7 @@ import { DocOrderIndex } from './docOrderIndex.js';
 import { MessageBox } from './messagebox.js';
 import {
     ABLATE, PERF_DEEP, perfAdd, perfCount, perfDeepAdd, perfDeepCount, perfDeepNow, perfMark,
-    perfSpan, perfWatchGenerator,
+    perfNow, perfSpan, perfWatchGenerator,
 } from './perf.js';
 
 export class DocumentTooLargeError extends Error {}
@@ -1040,26 +1040,97 @@ export class Viewer {
             .data("selected", true);
     }
 
+    /*
+     * Ticket 11 instrumentation.  The two passes are accumulated across yields
+     * rather than wrapped in one span: runGenerator resumes on setTimeout(0), so
+     * the generator's *elapsed* time includes the search index's slices and
+     * whatever layout and paint the browser interleaves.  The spans are work; the
+     * marks give elapsed; the difference between them is the finding.
+     *
+     * The counters are local integers emitted once per iframe, and perfNow() is
+     * called once per hundred nodes at a yield, never once per node.
+     */
     * postProcess() {
         for (const iframe of this._iframes.get()) {
-            const elts = $(iframe).contents().get(0).querySelectorAll(".ixbrl-contains-absolute");
+            const elts = perfSpan('drain.viewer.select',
+                () => $(iframe).contents().get(0).querySelectorAll(".ixbrl-contains-absolute"));
+            /* Ticket 07 named this as the counter the viewer's drain pass scales
+             * with - containers, not the fcwn.absoluteSubNodes descendants.  It is
+             * emitted before the arm dispatch, so it is also the guard that an arm
+             * has not silently ablated something it has no business touching. */
+            perfCount('drain.viewer.containsAbsolute', elts.length);
+            if (ABLATE === 'drainnopass') {
+                /* Named explicitly, and the only arm that skips the passes: no
+                 * bare else here, because ticket 06 found one meant another code
+                 * path's arms silently ablated this one too. */
+                continue;
+            }
             // In some cases, getBoundingClientRect().height returns 0, and
             // immediately repeating the call returns > 0, so do this in two passes.
+            let acc = 0;
+            let layout = 0;
+            let yields = 0;
+            let t = perfNow();
             for (const [i, e] of elts.entries()) {
                 if (getComputedStyle(e).getPropertyValue("display") !== 'inline') {
                     e.getBoundingClientRect().height
+                    layout++;
                 }
                 if (i % 100 === 0) {
+                    acc += perfNow() - t;
                     yield;
+                    yields++;
+                    t = perfNow();
                 }
             }
-            for (const [i, e] of elts.entries()) {
-                if (getComputedStyle(e).getPropertyValue("display") !== 'inline' && e.getBoundingClientRect().height == 0) {
+            perfAdd('drain.viewer.pass1', acc + perfNow() - t);
+            perfCount('drain.viewer.pass1Layout', layout);
+            perfCount('drain.viewer.yields', yields);
+            if (ABLATE === 'drainbatched') {
+                /* Ordering control, not an ablation - see ABLATE in perf.js for
+                 * why hoisting the writes cannot change a read's answer. */
+                const hide = [];
+                acc = 0;
+                yields = 0;
+                t = perfNow();
+                for (const [i, e] of elts.entries()) {
+                    if (getComputedStyle(e).getPropertyValue("display") !== 'inline' && e.getBoundingClientRect().height == 0) {
+                        hide.push(e);
+                    }
+                    if (i % 100 === 0) {
+                        acc += perfNow() - t;
+                        yield;
+                        yields++;
+                        t = perfNow();
+                    }
+                }
+                perfCount('drain.viewer.yields', yields);
+                for (const e of hide) {
                     e.classList.add("ixbrl-no-highlight");
                 }
-                if (i % 100 === 0) {
-                    yield;
+                perfAdd('drain.viewer.pass2', acc + perfNow() - t);
+                perfCount('drain.viewer.noHighlight', hide.length);
+            }
+            else {
+                acc = 0;
+                yields = 0;
+                let hidden = 0;
+                t = perfNow();
+                for (const [i, e] of elts.entries()) {
+                    if (getComputedStyle(e).getPropertyValue("display") !== 'inline' && e.getBoundingClientRect().height == 0) {
+                        e.classList.add("ixbrl-no-highlight");
+                        hidden++;
+                    }
+                    if (i % 100 === 0) {
+                        acc += perfNow() - t;
+                        yield;
+                        yields++;
+                        t = perfNow();
+                    }
                 }
+                perfCount('drain.viewer.yields', yields);
+                perfAdd('drain.viewer.pass2', acc + perfNow() - t);
+                perfCount('drain.viewer.noHighlight', hidden);
             }
         }
     }

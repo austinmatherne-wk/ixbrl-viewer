@@ -73,6 +73,26 @@ export const PERF_DEEP = ON && LEVEL === 'deep';
  *                         tests are all resolved before any of its rows is built.
  *                         Against none: what interleaving costs.  Against
  *                         rownohide: what the reads cost once uninterleaved.
+ *
+ * Ticket 11's arms, on viewer.postProcess() - the forced-layout pass inside the
+ * post-load drain, and the third place t05's absolute sub-nodes are paid for:
+ *
+ *   drainnopass           neither of postProcess()'s two passes runs.  The
+ *                         querySelectorAll still happens, so the guard counter
+ *                         drain.viewer.containsAbsolute is unchanged.  Against
+ *                         none: the whole cost of the viewer's drain pass, which
+ *                         is ticket 07's term-2 residual measured directly rather
+ *                         than inferred by subtracting a search-index estimate.
+ *   drainbatched          an ordering control, not an ablation: pass 2 does every
+ *                         read and every write it always did and the same nodes
+ *                         end up classed, but the writes are hoisted past all the
+ *                         reads.  Against none: what interleaving costs here.
+ *                         Sound because every rule keyed on .ixbrl-no-highlight
+ *                         sets only background-color, outline or cursor, and each
+ *                         sits under an ancestor class (.ixbrl-highlight,
+ *                         .ixbrl-related, .ixbrl-selected, :hover) that no node
+ *                         carries during the drain - so hoisting the writes cannot
+ *                         change a single read's answer.
  */
 export const ABLATE = new URLSearchParams(window.location.search).get('ixvablate') ?? 'none';
 
@@ -120,6 +140,17 @@ export function perfMark(name) {
         }
     }
 }
+
+/*
+ * The clock, for a span that cannot be a callback because a `yield` sits inside
+ * it.  Ticket 11's two drain generators are the case: runGenerator resumes them
+ * on setTimeout(0), so a span wrapped round the whole loop would time the other
+ * generator's slices and the browser's layout and paint as well as its own work.
+ * Accumulate across the slices instead - stop the clock at each yield, restart it
+ * on resume, emit one perfAdd() at the end.  Returns 0 when off, so arithmetic on
+ * it stays harmless.
+ */
+export const perfNow = () => (ON ? now() : 0);
 
 /* Accumulate an already-measured duration. */
 export function perfAdd(name, ms) {

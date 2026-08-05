@@ -68,7 +68,15 @@ module.exports = [
     { key: 'toLoaderGone', label: 'inspectorInit.end -> loader removed (interact)',
         from: 'marks.phase.inspectorInit.end', to: 'marks.loaderRemoved',
         spans: ['interact.configure'] },
+    /* The one phase whose nested spans do not tile it and cannot be made to.  The
+     * viewer's pass and the search index are two generators resumed by separate
+     * setTimeout(0) chains, so they interleave: the phase is elapsed time shared
+     * between them plus whatever layout, paint and GC the browser runs in the
+     * gaps.  Ticket 11's spans are each pass's own accumulated *work*, and phase
+     * minus their sum is the interleave - a quantity, not a residual to close. */
     { key: 'drain', label: 'post-load drain (loader gone -> drained)',
         from: 'marks.loaderRemoved', to: 'marks.drained',
-        spans: [] },
+        spans: ['drain.viewer.select', 'drain.viewer.pass1', 'drain.viewer.pass2',
+            'drain.search.facts', 'drain.search.docs', 'drain.search.lunrAdd',
+            'drain.search.lunrBuild', 'drain.search.doneCallback'] },
 ];

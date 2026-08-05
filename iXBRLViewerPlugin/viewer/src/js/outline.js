@@ -1,8 +1,15 @@
 // See COPYRIGHT.md for copyright information
 
+import { perfCount, perfPush } from './perf.js';
+
 export class ReportSetOutline {
     constructor(reportSet) {
         this._reportSet = reportSet;
+        /* Ticket 10: one DocumentOutline per *target* report, so this is the
+         * pass most likely to double on a two-target document.  Counted rather
+         * than inferred - see each outline's own counters below for whether the
+         * work is duplicated or merely partitioned. */
+        perfCount('outline.documentOutlines', reportSet.reports.length);
         this.outlines = reportSet.reports.map(r => new DocumentOutline(r));
     }
 
@@ -32,11 +39,18 @@ export class DocumentOutline {
         const longestRunFacts = {};
         this._buildDimensionMap();
         const elrs = report.relationshipGroups("pres");
+        /* Ticket 10: the outline's unit of work is one factInGroup() test, so
+         * accumulate locally across the loop and emit once (perf.js's rule -
+         * never call into the module from inside a per-item loop). */
+        let tests = 0;
+        let walked = 0;
         for (const f of facts) {
             if (f.isHidden()) {
                 continue;
             }
+            walked++;
             for (const elr of elrs) {
+                tests++;
                 if (this.factInGroup(f, elr)) {
                     if (!(elr in runFacts)) {
                         // Start a new run
@@ -63,6 +77,21 @@ export class DocumentOutline {
         }
 
         this.sectionFacts = longestRunFacts;
+
+        perfCount('outline.buildFactInGroupTests', tests);
+        perfCount('outline.buildFactsWalked', walked);
+        perfCount('outline.buildElrs', elrs.length);
+        /* Per-outline detail, so a two-target document shows whether its two
+         * outlines each saw the whole document (duplicated work) or a disjoint
+         * slice of it (partitioned work). */
+        perfPush('outlines', {
+            target: report._reportData?.target ?? null,
+            facts: facts.length,
+            factsWalked: walked,
+            elrs: elrs.length,
+            factInGroupTests: tests,
+            sections: Object.keys(longestRunFacts).length,
+        });
     }
 
     // Returns true if a fact participates in the given presentation group.

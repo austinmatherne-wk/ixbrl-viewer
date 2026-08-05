@@ -8,6 +8,7 @@ import { titleCase, viewerUniqueId } from "./util.js";
 import { QName } from "./qname.js";
 import { ViewerOptions } from './viewerOptions.js';
 import { TaxonomyNamer } from './taxonomynamer.js';
+import { perfCount, perfDetail } from './perf.js';
 
 // Class represents the set of XBRL "target" reports shown in the viewer.
 // Each contained report represents the data from a single target document in a
@@ -29,7 +30,31 @@ export class ReportSet {
         this._initialize();
     }
 
+    /*
+     * Ticket 10 counters.  The question is whether any per-document pass is
+     * driven off the *flattened target-report* list (reportsData(), and the
+     * this.reports built below) rather than off the source-document list, which
+     * would make a two-target document pay twice.  Emitted once here, so the
+     * structure a run actually saw is on every result JSON rather than inferred
+     * from the fixture's metadata.
+     */
+    _perfReportShape() {
+        const srs = this._data.sourceReports ?? [ { "targetReports": [ this._data ] } ];
+        perfCount('reports.sourceReports', srs.length);
+        perfCount('reports.targetReports', srs.reduce((n, sr) => n + sr.targetReports.length, 0));
+        perfDetail('reportShape', {
+            sourceReports: srs.length,
+            targetReportsPerSourceReport: srs.map(sr => sr.targetReports.length),
+            factsPerTargetReport: srs.flatMap(
+                sr => sr.targetReports.map(t => Object.keys(t.facts ?? {}).length)),
+            presElrsPerTargetReport: srs.flatMap(
+                sr => sr.targetReports.map(t => Object.keys(t.rels?.pres ?? {}).length)),
+            reportFiles: this.reportFiles().length,
+        });
+    }
+
     _initialize() {
+        this._perfReportShape();
         this._items = {};
         this.reports = [];
         // Build an array of footnotes IDs in document order so that we can assign
@@ -88,7 +113,13 @@ export class ReportSet {
     }
 
     facts() {
-        return Object.values(this._items).filter(i => i instanceof Fact);
+        const all = Object.values(this._items);
+        /* Uncached, so this is a full scan of the item map per call.  Counted to
+         * tell a cost that scales with *report count* (factsForReport, below)
+         * apart from one that scales with the number of call sites. */
+        perfCount('reports.factsCalls');
+        perfCount('reports.factsItemsScanned', all.length);
+        return all.filter(i => i instanceof Fact);
     }
 
     filingDocuments() {
@@ -258,7 +289,13 @@ export class ReportSet {
     }
 
     factsForReport(report) {
-        return Object.values(this._items).filter(i => i instanceof Fact && i.report == report);
+        const all = Object.values(this._items);
+        /* One full scan of the whole item map per *target report*: this is the
+         * one startup cost that genuinely scales with target-report count, so
+         * a two-target document scans twice what a one-target document does. */
+        perfCount('reports.factsForReportCalls');
+        perfCount('reports.factsForReportItemsScanned', all.length);
+        return all.filter(i => i instanceof Fact && i.report == report);
     }
 
 }

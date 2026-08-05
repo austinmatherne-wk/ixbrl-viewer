@@ -3,12 +3,17 @@
 THROWAWAY. Built for the startup-slowness investigation
 (`.scratch/startup-slowness`, ticket 03) and **never to be merged to `master`**.
 
-Two pieces:
+Four pieces:
 
 - `iXBRLViewerPlugin/viewer/src/js/perf.js` — instrumentation compiled into the
   viewer bundle. Publishes everything on `window.IXVPERF`.
 - `perf-harness/measure-phases.js` — the driver: runs fixtures, tiers, arms and
   repetitions, and writes one JSON file.
+- `perf-harness/report-phases.js` — reshapes one or more of those JSON files into
+  the ticket-04 markdown tables. Reads only; re-measures nothing.
+- `perf-harness/frame-lag.js` — the paired-arm comparison of the one window where
+  the baseline branch and `master` differ, done as a within-run difference. See
+  [Paired two-build runs](#paired-two-build-runs).
 
 ## Quick start
 
@@ -129,6 +134,34 @@ drifts both arms equally. Neither checkout's `dist/` is touched and none of the
 corpus's ~600MB of source documents is copied: each arm gets a temporary tree of
 symlinks with only `ixbrlviewer.dev.js` pointed at its own build, served on its
 own port.
+
+Alternating the arms is necessary but not sufficient. `external.loaderRemoved` is
+an *absolute* time, so its run-to-run spread is the whole page load's — ±90ms on
+a 780ms fixture, which is far wider than the effect a two-build comparison is
+usually looking for. Ticket 04 had to compare the interval between loader removal
+and the frame after it, which is a **within-run** difference and so cancels the
+common movement both arms share: it cut the spread from ±90ms to ±12ms and turned
+an unresolvable delta into a resolved one. `frame-lag.js` is that comparison.
+Reach for a within-run interval before concluding a paired comparison is
+inconclusive.
+
+## The phase table
+
+`report-phases.js` holds the startup timeline as a `PHASES` list, and that list is
+a **complete partition** of nav start → drained: on this corpus every phase table
+it prints closes to a residual of `0±0`. The five `setProgress` phases in the
+source do not tile the window on their own — the browser's own parse of the host
+document sits before the first of them, and three gaps sit between them, one of
+which (`preProcess.end → prepare.start`) is a `setProgress` double-rAF wait worth
+up to 117ms. A boundary may be a list of candidate marks, first present wins,
+which is how one row tiles both review and non-review mode.
+
+Phase durations are computed **per run and only then reduced to a median**.
+Differencing the medians of two boundary marks looks equivalent and is not: those
+marks are absolute times carrying the whole run's variance, and on an 80ms phase
+inside a window that itself moves ±75ms it printed a phase *shorter than a span
+nested inside it*. A within-run difference cancels that, and it is the only form
+that can carry a spread at all.
 
 ## Rules this harness exists to enforce
 

@@ -8,8 +8,8 @@ import { getIXHiddenLinkStyle, runGenerator, viewerUniqueId, HIGHLIGHT_COLORS } 
 import { DocOrderIndex } from './docOrderIndex.js';
 import { MessageBox } from './messagebox.js';
 import {
-    ABLATE, PERF_DEEP, perfAdd, perfCount, perfDeepAdd, perfDeepCount, perfDeepNow, perfMark,
-    perfNow, perfSpan, perfWatchGenerator,
+    ABLATE, ABLATE_UNTAGGED, PERF_DEEP, perfAdd, perfCount, perfDeepAdd, perfDeepCount,
+    perfDeepNow, perfMark, perfMarkOnce, perfNow, perfSpan, perfWatchGenerator,
 } from './perf.js';
 
 export class DocumentTooLargeError extends Error {}
@@ -87,7 +87,19 @@ export class Viewer {
                             if (viewer._iv.isReviewModeEnabled()) {
                                 await new Promise((resolve, _) => {
                                     viewer._iv.setProgress("Finding untagged numbers and dates").then(() => {
-                                        perfMark('phase.untagged.start');
+                                        /* Once per *load*, not once per document.
+                                         * These marks used to be last-write-wins
+                                         * inside the per-iframe loop, so on a
+                                         * multi-document set (clorox-2022) the
+                                         * phase described only the final document
+                                         * while the spans nested inside it
+                                         * accumulated across all of them - 80.0ms
+                                         * of phase against 138.4ms of span.  The
+                                         * end mark is still last-write-wins, so
+                                         * the pair now brackets the whole loop
+                                         * and the two agree.  Ticket 12. */
+                                        perfMarkOnce('phase.untagged.start');
+                                        perfCount('viewer.untagged.docs');
                                         // Temporarily hide all children of "body" to avoid constant
                                         // re-layouts when wrapping untagged numbers
                                         const children = perfSpan('viewer.untagged.hideChildren', () => {
@@ -184,12 +196,61 @@ export class Viewer {
     }
 
 
+    /*
+     * INSTRUMENTED - ticket 12.  The recursion moved into
+     * _wrapUntaggedNumbersInner so that this entry point, which runs once per
+     * document, can reset an accumulator and emit one perfCount per counter
+     * afterwards.  Nothing here calls into perf.js from inside the walk: the
+     * counters are plain integers on a local object and the deep-level segment
+     * clocks are inlined behind an already-loaded boolean, because this loop is
+     * per *node* and a real filing has millions of them.
+     */
     _wrapUntaggedNumbers(n, docIndex, ignoreFullMatch) {
+        const acc = {
+            elementNodes: 0, elementsRecursed: 0, textNodes: 0, textChars: 0,
+            matches: 0, keptAsText: 0, wrapped: 0,
+            contents: 0, elementTest: 0, match: 0, matchRewrite: 0, rewrite: 0,
+        };
+        this._wrapUntaggedNumbersInner(n, docIndex, ignoreFullMatch, acc);
+
+        /* Volumes.  The first three are the arm guard: the walk is untouched by
+         * every ticket 12 arm and replaceWith preserves text content, so all
+         * three must read identical across arms or the delta is not the ablated
+         * statement.  See ABLATE in perf.js. */
+        perfCount('untagged.elementNodes', acc.elementNodes);
+        perfCount('untagged.textNodes', acc.textNodes);
+        perfCount('untagged.textChars', acc.textChars);
+        perfCount('untagged.elementsRecursed', acc.elementsRecursed);
+        perfCount('untagged.matches', acc.matches);
+        perfCount('untagged.keptAsText', acc.keptAsText);
+        perfCount('untagged.wrapped', acc.wrapped);
+
+        /* The five segments, which tile the walk bar the loop's own overhead. */
+        perfDeepAdd('untagged.contents', acc.contents);
+        perfDeepAdd('untagged.elementTest', acc.elementTest);
+        perfDeepAdd('untagged.match', acc.match);
+        perfDeepAdd('untagged.matchRewrite', acc.matchRewrite);
+        perfDeepAdd('untagged.rewrite', acc.rewrite);
+    }
+
+    _wrapUntaggedNumbersInner(n, docIndex, ignoreFullMatch, acc) {
         const viewer = this;
         const ixHiddenStyleRE = /(?:^|\s|;)-(?:sec|esef)-ix-hidden:\s*([^\s;]+)/;
+        /* Hoisted so the per-node clocks below are a test of an already-loaded
+         * boolean rather than a call into perf.js. */
+        const deep = PERF_DEEP;
+        const arm = ABLATE_UNTAGGED;
 
-        n.contents().each(function () {
+        let t = deep ? performance.now() : 0;
+        const contents = n.contents();
+        if (deep) {
+            acc.contents += performance.now() - t;
+        }
+
+        contents.each(function () {
             if (this.nodeType === Node.ELEMENT_NODE) {
+                acc.elementNodes++;
+                t = deep ? performance.now() : 0;
                 const name = localName(this.nodeName.toUpperCase());
                 /*
                  * Content in text tags should not be considered tagged, so carry
@@ -205,41 +266,87 @@ export class Viewer {
                  *  that tagged.
                  *
                  */
-                if (!(
+                const recurse = !(
                         name === 'NONFRACTION' ||
                         (name === 'NONNUMERIC' && this.getAttribute('format') !== null) ||
                         (this.hasAttribute('style') && this.getAttribute('style').match(ixHiddenStyleRE))
-                )) {
-                    viewer._wrapUntaggedNumbers($(this), docIndex, name === 'NONNUMERIC');
+                );
+                if (deep) {
+                    acc.elementTest += performance.now() - t;
+                }
+                if (recurse) {
+                    acc.elementsRecursed++;
+                    viewer._wrapUntaggedNumbersInner($(this), docIndex, name === 'NONNUMERIC', acc);
                 }
             }
             else if (this.nodeType === Node.TEXT_NODE) {
+                acc.textNodes++;
                 const input = this.nodeValue;
-                const output = $("<div></div>");
-                let pos = 0;
-                numberMatchSearch(input, function (m, do_not_want, is_date) {
-                    if (m.index > pos) {
-                        output.append(document.createTextNode(input.substring(pos, m.index)));
-                    }
-                    // If "ignoreFullMatch" is specified, we ignore a match which
-                    // covers the whole of n's text content.
-                    if (do_not_want ||
-                            (ignoreFullMatch && m.index === 0 && m.index + m[0].length === input.length && input === n.text())) {
-                        output.append(document.createTextNode(m[0]));
-                    }
-                    else {
-                        const c = is_date ? 'review-untagged-date' : 'review-untagged-number';
-                        $('<span></span>')
-                                .text(m[0])
-                                .addClass(c)
-                                .appendTo(output);
-                    }
-                    pos = m.index + m[0].length;
-                });
-                if (pos < input.length) {
-                    output.append(document.createTextNode(input.substring(pos, input.length)));
+                acc.textChars += input.length;
+                /* Arms are named explicitly, never reached by a bare else - an
+                 * arm belonging to another code path must leave this walk
+                 * byte-identical to master.  See ABLATE in perf.js. */
+                if (arm === 'untaggedwalkonly') {
+                    return;
                 }
-                $(this).replaceWith(output.contents());
+                const rewrite = arm !== 'untaggednorewrite';
+                t = deep ? performance.now() : 0;
+                const output = rewrite ? $("<div></div>") : null;
+                if (deep) {
+                    acc.rewrite += performance.now() - t;
+                }
+                let pos = 0;
+                if (arm !== 'untaggednomatch') {
+                    /* The callback's own time is subtracted from the matcher's, so
+                     * `match` is the regex and `matchRewrite` is the span building
+                     * its matches drive. */
+                    let cb = 0;
+                    const tm = deep ? performance.now() : 0;
+                    numberMatchSearch(input, function (m, do_not_want, is_date) {
+                        const tc = deep ? performance.now() : 0;
+                        acc.matches++;
+                        if (rewrite && m.index > pos) {
+                            output.append(document.createTextNode(input.substring(pos, m.index)));
+                        }
+                        // If "ignoreFullMatch" is specified, we ignore a match which
+                        // covers the whole of n's text content.
+                        if (do_not_want ||
+                                (ignoreFullMatch && m.index === 0 && m.index + m[0].length === input.length && input === n.text())) {
+                            acc.keptAsText++;
+                            if (rewrite) {
+                                output.append(document.createTextNode(m[0]));
+                            }
+                        }
+                        else {
+                            acc.wrapped++;
+                            if (rewrite) {
+                                const c = is_date ? 'review-untagged-date' : 'review-untagged-number';
+                                $('<span></span>')
+                                        .text(m[0])
+                                        .addClass(c)
+                                        .appendTo(output);
+                            }
+                        }
+                        pos = m.index + m[0].length;
+                        if (deep) {
+                            cb += performance.now() - tc;
+                        }
+                    });
+                    if (deep) {
+                        acc.match += performance.now() - tm - cb;
+                        acc.matchRewrite += cb;
+                    }
+                }
+                if (rewrite) {
+                    t = deep ? performance.now() : 0;
+                    if (pos < input.length) {
+                        output.append(document.createTextNode(input.substring(pos, input.length)));
+                    }
+                    $(this).replaceWith(output.contents());
+                    if (deep) {
+                        acc.rewrite += performance.now() - t;
+                    }
+                }
             }
         });
     }

@@ -93,8 +93,49 @@ export const PERF_DEEP = ON && LEVEL === 'deep';
  *                         .ixbrl-related, .ixbrl-selected, :hover) that no node
  *                         carries during the drain - so hoisting the writes cannot
  *                         change a single read's answer.
+ *
+ * Ticket 12's arms, on _wrapUntaggedNumbers - review mode's tree walk.  The three
+ * things inside the walk are the traversal, the regex matcher, and the DOM
+ * rewrite, and the rewrite happens for *every* text node whether it matched or
+ * not (the loop always builds an output div and always replaceWith()s), so the
+ * matched and unmatched rewrites have to be separated too:
+ *
+ *   untaggedwalkonly      the text-node branch does nothing at all: no match, no
+ *                         rewrite.  Against none: everything but the traversal.
+ *   untaggednomatch       numberMatchSearch is not called, so no match is found,
+ *                         but the unconditional rewrite still happens and the
+ *                         text node is still replaced by an identical one.
+ *                         Against untaggedwalkonly: the rewrite every text node
+ *                         pays regardless.  Against none: the matcher plus the
+ *                         span-building its matches drive.
+ *   untaggednorewrite     the matcher runs in full - every match, every
+ *                         do_not_want and ignoreFullMatch test - but nothing is
+ *                         appended and nothing is replaced.  Against
+ *                         untaggedwalkonly: the matcher alone.
+ *
+ * The guard counters, which no untagged arm has any business moving:
+ * untagged.textNodes, untagged.elementNodes and untagged.textChars are identical
+ * across all four arms, because the walk itself is untouched and replaceWith
+ * preserves text content.  untagged.matches is identical on none and
+ * untaggednorewrite and zero on the other two, by construction.
+ *
+ * Confound to report, never to hide: three of these arms leave fewer nodes in the
+ * document than the baseline, so viewer.untagged.showChildren - a forced relayout
+ * of what the walk just built - gets cheaper on an arm for a reason that is not
+ * the ablated statement.  It is a separate span; quote it per arm.
  */
 export const ABLATE = new URLSearchParams(window.location.search).get('ixvablate') ?? 'none';
+
+/*
+ * Named explicitly rather than tested with a bare `else` in the hot loop: ticket
+ * 06 found that _findOrCreateWrapperNodeInner's chain ended in an unnamed `else`,
+ * so arms belonging to an entirely different code path silently ablated ticket
+ * 05's descendant scan as well - a 19-second delta that would have cleared the
+ * evidence bar handsomely.  An arm this path does not own resolves to 'none'
+ * here, so the loop below stays byte-identical to master for it.
+ */
+const UNTAGGED_ARMS = ['untaggedwalkonly', 'untaggednomatch', 'untaggednorewrite'];
+export const ABLATE_UNTAGGED = UNTAGGED_ARMS.includes(ABLATE) ? ABLATE : 'none';
 
 const now = () => performance.now();
 
@@ -138,6 +179,19 @@ export function perfMark(name) {
         if (performance.memory !== undefined) {
             state.heap[name] = performance.memory.usedJSHeapSize;
         }
+    }
+}
+
+/*
+ * A mark that must describe the *first* time its statement is reached rather than
+ * the last.  perfMark is last-write-wins, which is right for an end boundary and
+ * wrong for a start boundary sitting inside a per-document loop: the phase then
+ * covers only the final document while the spans nested inside it accumulate
+ * across all of them.  Ticket 12.
+ */
+export function perfMarkOnce(name) {
+    if (ON && state.marks[name] === undefined) {
+        perfMark(name);
     }
 }
 

@@ -41,7 +41,9 @@ module.exports = [
         spans: [] },
     { key: 'untagged', label: 'phase.untagged (review mode only)',
         from: 'marks.phase.untagged.start', to: 'marks.phase.untagged.end',
-        spans: ['viewer.untagged.hideChildren', 'viewer.wrapUntaggedNumbers', 'viewer.untagged.showChildren'] },
+        spans: ['viewer.untagged.hideChildren', 'viewer.wrapUntaggedNumbers', 'viewer.untagged.showChildren',
+            'untagged.contents', 'untagged.elementTest', 'untagged.match', 'untagged.matchRewrite',
+            'untagged.rewrite'] },
     /* The progress hop: setProgress resolves on a double rAF, so this is pure
      * waiting.  In review mode the untagged phase sits inside it, which is why the
      * start mark falls back through two candidates. */

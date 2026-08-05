@@ -158,8 +158,10 @@ function main() {
             const iv = runs.map(x => elapsed(x) - sum(x, VIEWER) - sum(x, SEARCH));
             const y = runs.map(x => (x.counts?.['drain.viewer.yields'] ?? 0)
                 + (x.counts?.['drain.search.yields'] ?? 0));
-            il.push(`| \`${slug}\` | ${pm(iv)} | ${pm(y, f0)} `
-                + `| ${median(y) ? f1(median(iv) / median(y)) : '-'} `
+            /* A sweep taken before the counter existed reads 0, which would pass
+             * for "no yields happened" - say so instead. */
+            il.push(`| \`${slug}\` | ${pm(iv)} | ${median(y) ? pm(y, f0) : '_not counted_'} `
+                + `| ${median(y) ? f1(median(iv) / median(y)) : '_not counted_'} `
                 + `| ${pm(runs.map(x => d(x, 'RecalcStyleDuration')))} `
                 + `| ${pm(runs.map(x => d(x, 'RecalcStyleCount')), f0)} `
                 + `| ${pm(runs.map(x => d(x, 'LayoutDuration')))} `

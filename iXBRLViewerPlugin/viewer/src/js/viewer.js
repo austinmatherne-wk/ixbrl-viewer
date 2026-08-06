@@ -1237,8 +1237,45 @@ export class Viewer {
              *
              * Named explicitly, never a bare else, for the reason above. */
             const skipPass1 = ABLATE === 'drainnopass1' || ABLATE === 'drainnopass1fonts'
-                || ABLATE === 'drainbatchednopass1';
-            const batchedPass2 = ABLATE === 'drainbatched' || ABLATE === 'drainbatchednopass1';
+                || ABLATE === 'drainbatchednopass1' || ABLATE === 'drainwarmonce'
+                || ABLATE === 'drainyieldonly';
+            const batchedPass2 = ABLATE === 'drainbatched' || ABLATE === 'drainbatchednopass1'
+                || ABLATE === 'drainwarmonce' || ABLATE === 'drainyieldonly';
+            if (ABLATE === 'drainyieldonly') {
+                /* drainwarmonce showed a single forced layout does not substitute
+                 * for pass 1, so what pass 1 buys is elapsed time and event-loop
+                 * turns rather than "a layout has happened" - which is what ticket
+                 * 06 inferred from the source.  This arm keeps pass 1's yield
+                 * cadence exactly and drops only its reads.  If noHighlight comes
+                 * back to the baseline's count, the settling is bought by the
+                 * waiting and the 5,339 style reads are the removable part. */
+                const ty = perfNow();
+                let yieldOnly = 0;
+                for (let i = 0; i < elts.length; i++) {
+                    if (i % 100 === 0) {
+                        yield;
+                        yieldOnly++;
+                    }
+                }
+                perfAdd('drain.viewer.yieldOnly', perfNow() - ty);
+                perfCount('drain.viewer.yieldOnlyYields', yieldOnly);
+            }
+            if (ABLATE === 'drainwarmonce') {
+                /* The narrower guard ticket 06 predicted, made concrete by ticket
+                 * 07's measurement.  Deleting pass 1 outright stops highlighting 6
+                 * visibly non-zero elements on fr-esef-both-huge and 2 on
+                 * aviva-2025, so the pass is load-bearing - but its 310 ms is
+                 * 5,339 per-element getComputedStyle calls on a cold tree, and
+                 * what pass 2 may actually need is only that a full layout has
+                 * been performed at all.  One read of the document's own border
+                 * box forces exactly that, for one layout instead of thousands.
+                 *
+                 * If drain.viewer.noHighlight comes back to the baseline's count,
+                 * this is pass 1's correctness at pass 2's price. */
+                const tw = perfNow();
+                $(iframe).contents().get(0).body.getBoundingClientRect().height;
+                perfAdd('drain.viewer.warmOnce', perfNow() - tw);
+            }
             if (ABLATE === 'drainnopass1fonts') {
                 /* Ticket 06's first candidate precondition: text has no boxes
                  * until its font has loaded, and the viewer never waits on

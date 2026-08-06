@@ -555,7 +555,7 @@ export class Viewer {
          * path, and while the chain below ended in a bare `else` meaning noscan,
          * those arms silently ablated this scan as well - which took 19s off Aviva
          * and very nearly passed for a finding. */
-        if (!['noscan', 'nostyle', 'styleonly', 'batched', 'batchedordered', 'bomemo'].includes(ABLATE)) {
+        if (!['none', 'noscan', 'nostyle', 'styleonly', 'batched', 'batchedordered', 'bomemo'].includes(ABLATE)) {
             for (const node of nodes) {
                 let hasSubNodes = false;
                 allNodes.push(node);
@@ -643,7 +643,7 @@ export class Viewer {
                 node.classList.add("ixbrl-contains-absolute");
             }
         }
-        else if (ABLATE === 'batchedordered') {
+        else if (ABLATE === 'batchedordered' || ABLATE === 'none') {
             /* Ticket 02's *proposed fix*, and the only arm here that is a merge
              * candidate rather than a diagnostic.  It costs what `batched` costs -
              * all style is resolved before any class is written - but it also

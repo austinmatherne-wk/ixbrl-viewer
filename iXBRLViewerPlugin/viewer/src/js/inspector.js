@@ -369,7 +369,7 @@ export class Inspector {
         perfMark('inspector.postLoadAsync.start');
         runGenerator(perfWatchGenerator(
             this._search.buildSearchIndex(() => this.searchReady()),
-            'inspector.postLoadAsync.end'));
+            'inspector.postLoadAsync.end'), 'search');
     }
 
     /*

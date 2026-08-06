@@ -155,6 +155,50 @@ export const EXPOSE = new URLSearchParams(window.location.search).get('ixvexpose
 const UNTAGGED_ARMS = ['untaggedwalkonly', 'untaggednomatch', 'untaggednorewrite'];
 export const ABLATE_UNTAGGED = UNTAGGED_ARMS.includes(ABLATE) ? ABLATE : 'none';
 
+/*
+ * Ticket 04's arms, on runGenerator itself - the scheduling between the two drain
+ * generators' slices rather than inside either of them.  None of these is an
+ * ablation: every slice still runs, in the same order, doing the same work.  What
+ * changes is how the resume is posted and how many slices one post buys.
+ *
+ * Two independent factors, so the four arms are a 2x2 and each factor can be
+ * priced on its own:
+ *
+ *   yieldmsg        the resume is posted through a MessageChannel instead of
+ *                   setTimeout(0).  Still a task, so the event loop still gets its
+ *                   turn between slices, but a message task carries no nesting
+ *                   level and so no 4ms clamp.  Against none: the clamp alone,
+ *                   with the slice count held fixed.
+ *   yieldbudget     the resume is still a setTimeout(0), but one resume drains
+ *                   generator slices until YIELD_BUDGET_MS is spent instead of
+ *                   exactly one.  Against none: what fewer, fatter slices are
+ *                   worth with the clamp left in place.  Does nothing on a fixture
+ *                   whose slices already exceed the budget.
+ *   yieldboth       both.  This is the shape ticket 04 proposes to ship, so it is
+ *                   the arm whose delta may be quoted as the payoff.
+ *   yieldsched      yieldboth with scheduler.yield() in place of the
+ *                   MessageChannel.  The purpose-built primitive, and unlike a
+ *                   message task its continuation is prioritised ahead of ordinary
+ *                   tasks.  Chrome 129+ only, so it is measured to find out
+ *                   whether shipping a feature-detected fast path is worth the
+ *                   branch - not because it could be the only implementation.
+ *
+ * The guard counters, which no arm here has any business moving, because none of
+ * them touches a generator's body: drain.viewer.yields and drain.search.yields
+ * (the `yield` statements actually executed), drain.viewer.containsAbsolute,
+ * drain.viewer.pass1Layout, drain.viewer.noHighlight, drain.search.factCount and
+ * drain.search.docsBuilt.  A budget arm changes how many *resumes* those yields
+ * are spread over, never how many there are.
+ *
+ * sched.hops.<label> is the mechanism counter rather than a guard: it is the
+ * number of posted resumes, so it is unchanged by yieldmsg (same slices, cheaper
+ * post) and falls by roughly the budget divided by the per-slice work on the
+ * budget arms.  A delta on a budget arm that is not matched by a fall here has
+ * not happened for the reason this ticket claims.
+ */
+const SCHED_ARMS = ['yieldmsg', 'yieldbudget', 'yieldboth', 'yieldsched'];
+export const ABLATE_SCHED = SCHED_ARMS.includes(ABLATE) ? ABLATE : 'none';
+
 const now = () => performance.now();
 
 /* Both post-load passes must finish before the load counts as drained. */

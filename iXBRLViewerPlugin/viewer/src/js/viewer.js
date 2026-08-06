@@ -1296,7 +1296,7 @@ export class Viewer {
 
     postLoadAsync() {
         perfMark('viewer.postLoadAsync.start');
-        runGenerator(perfWatchGenerator(this.postProcess(), 'viewer.postLoadAsync.end'));
+        runGenerator(perfWatchGenerator(this.postProcess(), 'viewer.postLoadAsync.end'), 'viewer');
     }
 
 }

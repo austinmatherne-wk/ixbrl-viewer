@@ -2,6 +2,7 @@
 
 import moment from "moment";
 import Decimal from "decimal.js";
+import { ABLATE_SCHED, perfCount } from "./perf.js";
 
 export const SHOW_FACT = 'SHOW_FACT';
 
@@ -188,15 +189,71 @@ export function setDefault(obj, key, def) {
     return obj[key];
 }
 
-export function runGenerator(generator) {
+/*
+ * Ticket 04 instrumentation and arms.  On the 'none' arm this is the master
+ * function with a resume counter added: one generator.next() per posted
+ * setTimeout(0), and the post still happens after the slice rather than before
+ * it, so nothing about the baseline's scheduling is altered.  See ABLATE_SCHED in
+ * perf.js for what each arm changes and which counters guard it.
+ *
+ * The budget is deliberately well under a 16.7ms frame: the yield exists to keep
+ * the page responsive during a multi-second drain, and an arm that buys its delta
+ * by holding the main thread for longer than the baseline ever did would be
+ * answering a different question.
+ */
+const YIELD_BUDGET_MS = 5;
+
+export function runGenerator(generator, label) {
+    const budget = ABLATE_SCHED === 'yieldbudget' || ABLATE_SCHED === 'yieldboth'
+        || ABLATE_SCHED === 'yieldsched';
+    let hops = 0;
+    let post;
+
     function resume() {
-        const res = generator.next();
-        if (!res.done) {
-            setTimeout(resume, 0);
+        hops++;
+        let res;
+        if (budget) {
+            /* The deadline is taken BEFORE the first next(), so a hop runs one
+             * slice and then only keeps going while the budget is unspent.  Taken
+             * after it instead, the first deadline test is trivially true and
+             * every hop runs at least *two* slices - which on a fixture whose
+             * slices already exceed the budget doubles the longest uninterrupted
+             * run of script, for no gain.  Measured: it cost aviva-2025 44ms of
+             * frame lag against the baseline and bought nothing.
+             *
+             * performance.now() rather than perfNow(): the budget is part of the
+             * candidate fix, so it must keep working on an uninstrumented build. */
+            const deadline = performance.now() + YIELD_BUDGET_MS;
+            do {
+                res = generator.next();
+            } while (!res.done && performance.now() < deadline);
         }
+        else {
+            res = generator.next();
+        }
+        if (!res.done) {
+            post();
+            return;
+        }
+        perfCount(`sched.hops.${label ?? 'unlabelled'}`, hops);
         return;
     }
-    setTimeout(resume, 0);
+
+    if (ABLATE_SCHED === 'yieldmsg' || ABLATE_SCHED === 'yieldboth') {
+        /* One channel per generator, not one shared: both drain generators are in
+         * flight at once, so a single pending slot would drop a resume and hang
+         * the load. */
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => resume();
+        post = () => channel.port2.postMessage(0);
+    }
+    else if (ABLATE_SCHED === 'yieldsched') {
+        post = () => scheduler.yield().then(resume);
+    }
+    else {
+        post = () => setTimeout(resume, 0);
+    }
+    post();
 }
 
 /**

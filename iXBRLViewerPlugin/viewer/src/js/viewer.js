@@ -8,7 +8,7 @@ import { getIXHiddenLinkStyle, runGenerator, viewerUniqueId, HIGHLIGHT_COLORS } 
 import { DocOrderIndex } from './docOrderIndex.js';
 import { MessageBox } from './messagebox.js';
 import {
-    ABLATE, ABLATE_UNTAGGED, PERF_DEEP, perfAdd, perfCount, perfDeepAdd, perfDeepCount,
+    ABLATE, ABLATE_UNTAGGED, EXPOSE, PERF_DEEP, perfAdd, perfCount, perfDeepAdd, perfDeepCount,
     perfDeepNow, perfMark, perfMarkOnce, perfNow, perfSpan, perfWatchGenerator,
 } from './perf.js';
 
@@ -37,6 +37,15 @@ export class Viewer {
         this._ixNodeMap = {};
         this.docOrderItemIndex = new DocOrderIndex();
         this._currentDocumentIndex = 0;
+        /* Ticket 02's output-identity check needs the wrapperNodes *order* per
+         * fact, which no DOM signature can see - two arms can class exactly the
+         * same elements and still hand every downstream consumer a differently
+         * ordered jQuery set (ixnode.js:44's .first(), for one).  Gated on a URL
+         * parameter no timing run sets, so a measured arm never carries this
+         * reference and can never have its detached-node estimate skewed by it. */
+        if (EXPOSE) {
+            (window.IXVPERF ??= {}).ixNodeMap = this._ixNodeMap;
+        }
     }
 
     _checkContinuationCount() {
@@ -478,7 +487,7 @@ export class Viewer {
          * path, and while the chain below ended in a bare `else` meaning noscan,
          * those arms silently ablated this scan as well - which took 19s off Aviva
          * and very nearly passed for a finding. */
-        if (!['noscan', 'nostyle', 'styleonly', 'batched'].includes(ABLATE)) {
+        if (!['noscan', 'nostyle', 'styleonly', 'batched', 'batchedordered'].includes(ABLATE)) {
             for (const node of nodes) {
                 let hasSubNodes = false;
                 allNodes.push(node);
@@ -564,6 +573,49 @@ export class Viewer {
             }
             for (const node of containers) {
                 node.classList.add("ixbrl-contains-absolute");
+            }
+        }
+        else if (ABLATE === 'batchedordered') {
+            /* Ticket 02's *proposed fix*, and the only arm here that is a merge
+             * candidate rather than a diagnostic.  It costs what `batched` costs -
+             * all style is resolved before any class is written - but it also
+             * preserves the baseline's allNodes ORDER, which `batched` does not:
+             * where _wrapNode returns several nodes, batched groups every
+             * sub-element after every wrapper while the baseline interleaves them
+             * per wrapper.  Same members, different order, and that difference is
+             * the one thing standing between the ordering control and a shippable
+             * change - so this arm carries the per-node sub-lists that let the
+             * write pass rebuild the baseline's exact sequence.
+             *
+             * Sound for the same reason `batched` is: no rule in viewer.less keyed
+             * on .ixbrl-element, .ixbrl-sub-element or .ixbrl-contains-absolute
+             * touches 'position' (the only position: absolute there is
+             * div.ixbrl-table-handle), so hoisting the writes past the reads cannot
+             * change a single answer. */
+            const subNodeLists = [];
+            for (const node of nodes) {
+                const absoluteSubNodes = [];
+                for (const subNode of node.querySelectorAll("*")) {
+                    scanned++;
+                    if (getComputedStyle(subNode).getPropertyValue('position') === "absolute") {
+                        absoluteSubNodes.push(subNode);
+                        absolute++;
+                    }
+                }
+                subNodeLists.push(absoluteSubNodes);
+            }
+            for (let i = 0; i < nodes.length; i++) {
+                const node = nodes[i];
+                const absoluteSubNodes = subNodeLists[i];
+                allNodes.push(node);
+                node.classList.add("ixbrl-element");
+                for (const subNode of absoluteSubNodes) {
+                    subNode.classList.add("ixbrl-sub-element");
+                    allNodes.push(subNode);
+                }
+                if (absoluteSubNodes.length > 0) {
+                    node.classList.add("ixbrl-contains-absolute");
+                }
             }
         }
         else if (ABLATE === 'nostyle') {

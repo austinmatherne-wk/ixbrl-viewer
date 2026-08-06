@@ -58,6 +58,13 @@ export const PERF_DEEP = ON && LEVEL === 'deep';
  *                         is the same, but all style is resolved before any class
  *                         is applied.  Against none: what the baseline pays purely
  *                         for interleaving its style writes with its style reads.
+ *   batchedordered        ticket 02's proposed fix: batched, plus the per-node
+ *                         book-keeping that keeps allNodes in the baseline's exact
+ *                         order.  batched leaves the same members in a different
+ *                         order where _wrapNode returns several nodes; this arm
+ *                         does not, so it is the one arm above that could be
+ *                         merged.  Measure this, not batched, before claiming a
+ *                         payoff for the shipped change.
  *
  * Ticket 06's arms, on the fact-list row path rather than the document walk.
  * factListRow() calls f.isHTMLHidden() once per row, and that reads layout
@@ -125,6 +132,17 @@ export const PERF_DEEP = ON && LEVEL === 'deep';
  * the ablated statement.  It is a separate span; quote it per arm.
  */
 export const ABLATE = new URLSearchParams(window.location.search).get('ixvablate') ?? 'none';
+
+/*
+ * ?ixvexpose=1 publishes the viewer's _ixNodeMap on window.IXVPERF so a checker
+ * can read each fact's wrapperNodes in order.  Ticket 02 needs it: an ordering
+ * change can leave every class in the document exactly where it was and still
+ * reorder the jQuery set handed to every consumer of a fact's wrapper nodes, and
+ * no DOM signature can see that.  No timing run passes this - holding a live
+ * reference to the map would skew the detached-node estimate - so an arm's
+ * measured numbers never carry it.
+ */
+export const EXPOSE = new URLSearchParams(window.location.search).get('ixvexpose') === '1';
 
 /*
  * Named explicitly rather than tested with a bare `else` in the hot loop: ticket

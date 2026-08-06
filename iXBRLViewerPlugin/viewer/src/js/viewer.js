@@ -1416,8 +1416,9 @@ export class Viewer {
             const skipPass1 = ABLATE === 'drainnopass1' || ABLATE === 'drainnopass1fonts'
                 || ABLATE === 'drainbatchednopass1' || ABLATE === 'drainwarmonce'
                 || ABLATE === 'drainyieldonly';
-            const batchedPass2 = ABLATE === 'drainbatched' || ABLATE === 'drainbatchednopass1'
-                || ABLATE === 'drainwarmonce' || ABLATE === 'drainyieldonly';
+            /* Isolation of de-interleave-postprocess-pass2: batched pass 2 is
+             * the shipped default.  drainbatched is now a null vs none. */
+            const batchedPass2 = true;
             if (ABLATE === 'drainyieldonly') {
                 /* drainwarmonce showed a single forced layout does not substitute
                  * for pass 1, so what pass 1 buys is elapsed time and event-loop

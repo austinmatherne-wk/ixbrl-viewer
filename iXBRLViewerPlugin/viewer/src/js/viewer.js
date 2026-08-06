@@ -873,13 +873,24 @@ export class Viewer {
                     yield;
                 }
             }
+            /* Collect first and class afterwards, rather than classing as we go.
+             * Interleaved, each classList.add invalidates style for the document
+             * and so forces the next getComputedStyle to recalculate, which costs
+             * around a fifth of this pass on the filings that have many absolutely
+             * positioned containers.  It cannot change an answer: every rule that
+             * .ixbrl-no-highlight gates sets only background-color, outline or
+             * cursor, none of which affects display or geometry. */
+            const noHighlight = [];
             for (const [i, e] of elts.entries()) {
                 if (getComputedStyle(e).getPropertyValue("display") !== 'inline' && e.getBoundingClientRect().height == 0) {
-                    e.classList.add("ixbrl-no-highlight");
+                    noHighlight.push(e);
                 }
                 if (i % 100 === 0) {
                     yield;
                 }
+            }
+            for (const e of noHighlight) {
+                e.classList.add("ixbrl-no-highlight");
             }
         }
     }

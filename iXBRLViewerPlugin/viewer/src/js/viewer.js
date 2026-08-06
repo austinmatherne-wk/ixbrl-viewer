@@ -1224,28 +1224,67 @@ export class Viewer {
                  * path's arms silently ablated this one too. */
                 continue;
             }
+            /* Ticket 07's own arms.  drainnopass above removes BOTH passes, so it
+             * cannot price the change ticket 07 actually proposes: with pass 1
+             * gone, pass 2 becomes the *first* reader of this document's layout
+             * and inherits the flush pass 1 used to pay for.  These two arms keep
+             * pass 2 byte-identical and vary only what precedes it.
+             *
+             * drainbatchednopass1 is the one arm that combines two tickets': it is
+             * ticket 03's batched pass 2 with pass 1 deleted, because ABLATE holds
+             * one arm at a time and the question ticket 07 actually has to answer
+             * is what deleting pass 1 is worth in the world where ticket 03 ships.
+             *
+             * Named explicitly, never a bare else, for the reason above. */
+            const skipPass1 = ABLATE === 'drainnopass1' || ABLATE === 'drainnopass1fonts'
+                || ABLATE === 'drainbatchednopass1';
+            const batchedPass2 = ABLATE === 'drainbatched' || ABLATE === 'drainbatchednopass1';
+            if (ABLATE === 'drainnopass1fonts') {
+                /* Ticket 06's first candidate precondition: text has no boxes
+                 * until its font has loaded, and the viewer never waits on
+                 * document.fonts.ready.  The elements read below live in the
+                 * report iframe, so it is that document's font set that governs
+                 * their boxes.  Spin on a resolved flag rather than awaiting -
+                 * this is a generator, and runGenerator resumes it on a macrotask
+                 * - and count the wait so a null can be stated as a null. */
+                const doc = $(iframe).contents().get(0);
+                let fontsReady = false;
+                doc.fonts.ready.then(() => { fontsReady = true; });
+                const tf = perfNow();
+                let fontYields = 0;
+                while (!fontsReady) {
+                    yield;
+                    fontYields++;
+                }
+                perfAdd('drain.viewer.fontsWait', perfNow() - tf);
+                perfCount('drain.viewer.fontsWaitYields', fontYields);
+            }
             // In some cases, getBoundingClientRect().height returns 0, and
             // immediately repeating the call returns > 0, so do this in two passes.
             let acc = 0;
             let layout = 0;
             let yields = 0;
             let t = perfNow();
-            for (const [i, e] of elts.entries()) {
-                if (getComputedStyle(e).getPropertyValue("display") !== 'inline') {
-                    e.getBoundingClientRect().height
-                    layout++;
-                }
-                if (i % 100 === 0) {
-                    acc += perfNow() - t;
-                    yield;
-                    yields++;
-                    t = perfNow();
+            if (!skipPass1) {
+                for (const [i, e] of elts.entries()) {
+                    if (getComputedStyle(e).getPropertyValue("display") !== 'inline') {
+                        e.getBoundingClientRect().height
+                        layout++;
+                    }
+                    if (i % 100 === 0) {
+                        acc += perfNow() - t;
+                        yield;
+                        yields++;
+                        t = perfNow();
+                    }
                 }
             }
+            /* Emitted on every arm, including the two that skip the pass, so the
+             * ablation reads as a measured zero rather than as a missing key. */
             perfAdd('drain.viewer.pass1', acc + perfNow() - t);
             perfCount('drain.viewer.pass1Layout', layout);
             perfCount('drain.viewer.yields', yields);
-            if (ABLATE === 'drainbatched') {
+            if (batchedPass2) {
                 /* Ordering control, not an ablation - see ABLATE in perf.js for
                  * why hoisting the writes cannot change a read's answer. */
                 const hide = [];

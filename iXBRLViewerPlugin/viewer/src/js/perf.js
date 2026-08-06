@@ -101,6 +101,38 @@ export const PERF_DEEP = ON && LEVEL === 'deep';
  *                         carries during the drain - so hoisting the writes cannot
  *                         change a single read's answer.
  *
+ * Ticket 07's arms.  drainnopass above is NOT the arm that models ticket 07's
+ * change: it removes both passes, so its delta is the whole viewer drain pass.
+ * Deleting pass 1 alone leaves pass 2 as the first reader of the document's
+ * layout, inheriting the flush pass 1 used to pay for, so the payoff has to be
+ * measured with pass 2 still running:
+ *
+ *   drainnopass1          pass 1 does not run; pass 2 is byte-identical to the
+ *                         baseline's.  This is the candidate change.  Against
+ *                         none: what deleting pass 1 actually buys.  Against
+ *                         drainnopass: what pass 2 still costs once it is first.
+ *   drainnopass1fonts     drainnopass1, plus ticket 06's first candidate
+ *                         precondition: wait for the report document's
+ *                         fonts.ready before pass 2 reads anything.  Against
+ *                         drainnopass1: whether unloaded fonts are what pass 1
+ *                         was really buying time for.  drain.viewer.fontsWait
+ *                         and .fontsWaitYields price the wait itself.
+ *   drainbatchednopass1   the only arm that combines two tickets': ticket 03's
+ *                         batched pass 2 with pass 1 deleted.  ABLATE holds one
+ *                         arm at a time, and the question ticket 07 has to answer
+ *                         is what deleting pass 1 is worth in the world where
+ *                         ticket 03 ships - where pass 2 no longer dirties style
+ *                         between its own reads.  Against drainbatched: the
+ *                         payoff of ticket 07's change on ticket 03's tip.
+ *
+ * drain.viewer.noHighlight is a GUARD for every other drain arm and a FINDING for
+ * these two: ticket 06 established that pass 1 buys elapsed time rather than a
+ * second immediate read, so removing it may legitimately leave elements
+ * measuring zero that previously measured non-zero.  These arms are entitled to
+ * move that counter and the ticket must report by how much.  pass1Layout goes to
+ * zero on both by construction, and is emitted as an explicit zero rather than
+ * left missing.  drain.viewer.containsAbsolute remains a true guard on all arms.
+ *
  * Ticket 12's arms, on _wrapUntaggedNumbers - review mode's tree walk.  The three
  * things inside the walk are the traversal, the regex matcher, and the DOM
  * rewrite, and the rewrite happens for *every* text node whether it matched or

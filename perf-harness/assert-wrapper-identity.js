@@ -21,6 +21,13 @@
 //             classes exactly the same elements and still hands consumers a
 //             differently ordered jQuery set where _wrapNode returned several
 //             nodes.  Needs ?ixvexpose=1, which no timing run passes.
+//   classAttr the raw class attribute of each classed element, in attribute
+//             order.  Added for ticket 03, whose arm's *only* output is a
+//             classList.add: `dom` sorts the four classes into a canonical order
+//             and so cannot see a write landing in a different position within
+//             an element's own class list.  Ticket 02's lesson was that an
+//             ordering control needs its output *order* checked and not just its
+//             output, and for this arm the class attribute is that order.
 //
 // Exit status is 1 if any arm's signature differs from the first arm's, so this
 // is usable as a gate rather than something to read.
@@ -74,6 +81,7 @@ async function signatures() {
     const docs = [document, ...[...document.querySelectorAll('iframe')].map(f => f.contentDocument)];
     const index = new Map();
     const domParts = [];
+    const classAttrParts = [];
     let next = 0;
     let elements = 0;
     for (const doc of docs) {
@@ -87,6 +95,7 @@ async function signatures() {
             const on = CLASSES.filter(c => el.classList.contains(c));
             if (on.length) {
                 domParts.push(`${i}:${on.join(',')}`);
+                classAttrParts.push(`${i}:${el.getAttribute('class')}`);
             }
         }
     }
@@ -119,6 +128,7 @@ async function signatures() {
         wrapperNodes,
         exposed: map !== undefined,
         domHash: await hash(domParts.join('|')),
+        classAttrHash: await hash(classAttrParts.join('|')),
         wrapperHash: await hash(wrapperParts.join('|')),
         rows: document.querySelectorAll('#inspector .facts-by-group .fact-list-item').length,
         sections: document.querySelectorAll('#inspector .facts-by-group .collapsible-section').length,
@@ -157,7 +167,8 @@ async function main() {
             await page.goto(url, { waitUntil: 'load', timeout });
             await page.waitForFunction(() => window.IXVPERF?.done === true, { timeout, polling: 250 });
             byArm[armName] = await page.evaluate(signatures);
-            process.stderr.write(`dom=${byArm[armName].domHash} wrapper=${byArm[armName].wrapperHash}\n`);
+            process.stderr.write(`dom=${byArm[armName].domHash} classAttr=${byArm[armName].classAttrHash} `
+                + `wrapper=${byArm[armName].wrapperHash}\n`);
             await page.close();
         }
         const base = byArm[ARMS[0]];

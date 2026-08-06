@@ -98,6 +98,30 @@ const METRICS = [
     ['counts.sched.hops.search', 'hopsSearch', 'n'],
     ['counts.drain.viewer.yields', 'yieldsViewer', 'n'],
     ['counts.drain.search.yields', 'yieldsSearch', 'n'],
+    /* Ticket 05's arms act on the readiness wait, which sits before every phase
+     * above.  pollWait is the part an arm can move - iframePoll.start is where the
+     * baseline arms its interval, so the interval before that mark is setProgress's
+     * double rAF and belongs to ticket 10, not here.  `loading` is the whole phase,
+     * carried alongside so a delta on pollWait can be checked against it.
+     *
+     * ticks and the three readyBy counters are the mechanism: a delta whose ticks
+     * did not fall has not happened for the reason this ticket claims, and
+     * readyByPoll on the event arm is that arm's reliability, counted rather than
+     * argued.  The four volume guards are the correctness half: every arm runs the
+     * *same* readiness predicate, so resolving sooner must not hand the viewer a
+     * document in a state the baseline would never have accepted.  Nodes above is
+     * the fifth. */
+    ['phase.loading', 'loading', 'ms'],
+    ['iframePoll.wait', 'pollWait', 'ms'],
+    ['counts.iframePoll.ticks', 'ticks', 'n'],
+    ['counts.iframeReady.immediate', 'readyByNow', 'n'],
+    ['counts.iframeReady.event', 'readyByEvent', 'n'],
+    ['counts.iframeReady.poll', 'readyByPoll', 'n'],
+    ['counts.iframeLoad.events', 'loadEvents', 'n'],
+    ['counts.continuationMaps.elementsWalked', 'elemsWalked', 'n'],
+    ['counts.reports.factsItemsScanned', 'factsScanned', 'n'],
+    ['counts.factList.rowsBuilt', 'rowsBuilt', 'n'],
+    ['counts.drain.search.factCount', 'searchFacts', 'n'],
 ];
 
 const median = (xs) => {
@@ -120,6 +144,14 @@ function leaf(run, key) {
         'phase.untagged': (run.marks?.['phase.untagged.end'] === undefined
             ? undefined
             : run.marks['phase.untagged.end'] - run.marks['phase.untagged.start']),
+        'phase.loading': (run.marks?.['phase.loading.end'] === undefined
+            ? undefined
+            : run.marks['phase.loading.end'] - run.marks['phase.loading.start']),
+        /* Within-run, and the only interval ticket 05's arms can move: from the
+         * point the baseline arms its interval to the point readiness is seen. */
+        'iframePoll.wait': (run.marks?.['phase.loading.end'] === undefined
+            ? undefined
+            : run.marks['phase.loading.end'] - run.marks['iframePoll.start']),
         /* Within-run, for the reason the drainGap is: both frame marks carry the
          * whole load's variance, and the interval between them does not. */
         'frameLag.loaderRemoved': (run.windows?.toLoaderRemovedFrame === undefined

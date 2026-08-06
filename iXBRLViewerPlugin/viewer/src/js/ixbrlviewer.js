@@ -8,7 +8,7 @@ import { Inspector } from "./inspector.js";
 import { initializeTheme } from './theme.js';
 import { TaxonomyNamer } from './taxonomynamer.js';
 import { FEATURE_GUIDE_LINK, FEATURE_REVIEW, FEATURE_SUPPORT_LINK, FEATURE_SURVEY_LINK, USER_GUIDE_URL, moveNonAppAttributes } from "./util";
-import { perfAdd, perfClose, perfCount, perfLoaderRemoved, perfMark, perfOpen, perfSpan } from "./perf.js";
+import { ABLATE_LOAD, POLL_FAST_MS, perfAdd, perfClose, perfCount, perfLoaderRemoved, perfMark, perfOpen, perfSpan } from "./perf.js";
 
 const featureFalsyValues = new Set([undefined, null, '', 'false', false]);
 
@@ -378,10 +378,12 @@ export class iXBRLViewer {
             iv.setProgress(progress).then(() => {
                 perfMark('iframePoll.start');
                 /* Poll for iframe load completing - there doesn't seem to be a reliable event that we can use */
-                const timer = setInterval(() => {
-                    /* One count per 250ms tick, not per iframe: the tick total is
-                     * how much of this phase is pure polling latency. */
-                    perfCount('iframePoll.ticks');
+                let timer = null;
+                let resolved = false;
+                /* The baseline's interval body, lifted out so ticket 05's arms can
+                 * schedule it differently without changing a byte of the readiness
+                 * predicate or of what happens once it passes. */
+                const attempt = (how) => {
                     let complete = true;
                     iframes.each((n, iframe) => {
                         const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
@@ -389,9 +391,18 @@ export class iXBRLViewer {
                             complete = false;
                         }
                     });
-                    if (complete) {
+                    if (resolved || !complete) {
+                        return;
+                    }
+                    resolved = true;
+                    if (timer !== null) {
                         clearInterval(timer);
-                        perfMark('phase.loading.end');
+                    }
+                    /* Which mechanism ended the wait.  Exactly one of these is 1 on
+                     * any run, and on an event-driven arm a 'poll' here means the
+                     * event was not enough. */
+                    perfCount(`iframeReady.${how}`);
+                    perfMark('phase.loading.end');
 
                         iframes.each((n, iframe) => {
                             const htmlNode = $(iframe).contents().find('html');
@@ -465,8 +476,37 @@ export class iXBRLViewer {
                                 }
 
                             });
+                };
+                const tick = () => {
+                    /* One count per 250ms tick, not per iframe: the tick total is
+                     * how much of this phase is pure polling latency. */
+                    perfCount('iframePoll.ticks');
+                    attempt('poll');
+                };
+                if (ABLATE_LOAD === 'none') {
+                    timer = setInterval(tick, 250);
+                }
+                else {
+                    /* setInterval fires first at +250ms, so the baseline pays a
+                     * whole tick even when the answer is already yes.  Every arm
+                     * here asks first and arms the interval only if the answer is
+                     * no. */
+                    attempt('immediate');
+                    if (!resolved) {
+                        if (ABLATE_LOAD === 'loadevent') {
+                            iframes.each((n, iframe) => {
+                                iframe.addEventListener('load', () => {
+                                    perfCount('iframeLoad.events');
+                                    attempt('event');
+                                });
+                            });
+                        }
+                        /* The 250ms interval stays on the event arm as a backstop,
+                         * so a missed event costs latency rather than a viewer that
+                         * never loads - and iframeReady.poll then says so. */
+                        timer = setInterval(tick, ABLATE_LOAD === 'pollfast' ? POLL_FAST_MS : 250);
                     }
-                }, 250);
+                }
             });
         }, 0);
     }

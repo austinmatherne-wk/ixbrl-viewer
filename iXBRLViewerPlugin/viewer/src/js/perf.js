@@ -199,6 +199,62 @@ export const ABLATE_UNTAGGED = UNTAGGED_ARMS.includes(ABLATE) ? ABLATE : 'none';
 const SCHED_ARMS = ['yieldmsg', 'yieldbudget', 'yieldboth', 'yieldsched'];
 export const ABLATE_SCHED = SCHED_ARMS.includes(ABLATE) ? ABLATE : 'none';
 
+/*
+ * Ticket 05's arms, on how the viewer decides the source documents are ready.
+ * ixbrlviewer.js polls every iframe on a setInterval(..., 250), and setInterval
+ * fires *first* at +250ms - so a document set that is already ready when the poll
+ * starts still waits a whole tick for a test whose answer never changes.  In
+ * inline mode document 0 is reparented synchronously before the poll begins, so
+ * this is not a hypothetical.
+ *
+ * None of these is an ablation: every arm evaluates the *same* readiness
+ * predicate the baseline does, both halves of it (readyState complete-or-
+ * interactive AND a body with children).  What changes is when it is evaluated.
+ * That is deliberate - the predicate is the part with correctness risk, so
+ * holding it fixed keeps the delta attributable to quantisation alone.
+ *
+ *   pollnow      the predicate is evaluated once, synchronously, before the
+ *                interval is armed; the interval is then the baseline's 250ms and
+ *                is not armed at all if that first test passes.  Against none:
+ *                the first tick's latency, which is the whole wait on any fixture
+ *                whose documents are ready before the poll starts.
+ *   pollfast     pollnow, plus a 10ms interval instead of 250ms.  Against pollnow:
+ *                the residual quantisation on the fixtures that genuinely wait -
+ *                and it is the *ceiling* on what any detection mechanism can
+ *                recover, since no event can beat a 10ms poll by more than 10ms.
+ *                It is also a real candidate: nothing about it can miss an event.
+ *   loadevent    pollnow, plus an iframe `load` listener per iframe, with the
+ *                baseline 250ms interval retained as a backstop.  This is the
+ *                genuinely event-driven arm, and the backstop is what makes it
+ *                measurable rather than a gamble: iframeReady.poll counts the
+ *                times the event was not enough and polling had to finish the
+ *                job, so reliability is read off a counter instead of argued.
+ *                Note the direction of the risk is not obvious - `load` fires at
+ *                readyState `complete`, which is strictly *later* than the
+ *                `interactive` the baseline predicate already accepts, so this arm
+ *                can legitimately come out slower than pollfast.
+ *
+ * iframeReady.<how> is the mechanism counter: exactly one of immediate / poll /
+ * event is 1 on every run, and which one it is says which mechanism did the work.
+ * iframePoll.ticks is the other half of it - it must fall to 0 on any arm that
+ * resolved 'immediate', and a delta on an arm whose ticks did not move has not
+ * happened for the reason this ticket claims.
+ *
+ * The guards are every volume counter downstream, because resolving the wait
+ * sooner must not hand the viewer a document that is still parsing:
+ * continuationMaps.elementsWalked, reports.factsItemsScanned, factList.rowsBuilt,
+ * drain.search.factCount and metricsAtLoaderRemoved.Nodes.  The predicate is
+ * unchanged, so these must be identical across all four arms; if one moves, an
+ * arm caught a document in a state the baseline never would.
+ */
+const LOAD_ARMS = ['pollnow', 'pollfast', 'loadevent'];
+export const ABLATE_LOAD = LOAD_ARMS.includes(ABLATE) ? ABLATE : 'none';
+
+/* The fast arm's interval.  Small enough that its own quantisation is inside the
+ * spread of every fixture's load, large enough not to be a busy-wait against the
+ * parser it is waiting for. */
+export const POLL_FAST_MS = 10;
+
 const now = () => performance.now();
 
 /* Both post-load passes must finish before the load counts as drained. */

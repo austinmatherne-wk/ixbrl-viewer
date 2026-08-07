@@ -188,15 +188,33 @@ export function setDefault(obj, key, def) {
     return obj[key];
 }
 
+/**
+ * Run a generator to completion, one slice per task, yielding to the event loop
+ * in between so that the browser can paint during a long load.
+ *
+ * The resume is posted through a MessageChannel rather than scheduled with
+ * setTimeout(resume, 0).  A timer nested more than five deep is clamped to a
+ * minimum of 4ms, and because each resume is scheduled from inside the previous
+ * one every hop past the fifth pays that clamp; a message task carries no
+ * nesting level and so no clamp.  Both are still tasks, so the event loop gets
+ * its turn between slices either way - the slices themselves are unchanged, and
+ * so is their order.
+ *
+ * One channel per call, never a shared one: both post-load drains are in flight
+ * at the same time, so a single pending slot would drop a resume and hang the
+ * load.
+ *
+ * @param  {Generator} generator  Generator to run to completion
+ */
 export function runGenerator(generator) {
-    function resume() {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
         const res = generator.next();
         if (!res.done) {
-            setTimeout(resume, 0);
+            channel.port2.postMessage(0);
         }
-        return;
-    }
-    setTimeout(resume, 0);
+    };
+    channel.port2.postMessage(0);
 }
 
 /**

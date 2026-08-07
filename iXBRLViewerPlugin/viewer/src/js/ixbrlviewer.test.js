@@ -1,5 +1,6 @@
 // See COPYRIGHT.md for copyright information
 
+import $ from "jquery";
 import {iXBRLViewer} from "./ixbrlviewer";
 import {
     FEATURE_GUIDE_LINK,
@@ -215,5 +216,142 @@ describe("Guide link enablement", () => {
     test("Guide link disabled by query", () => {
         viewer.setFeatures({[FEATURE_GUIDE_LINK]: '/guide'}, FEATURE_GUIDE_LINK + '=false')
         expect(viewer.getGuideLinkUrl()).toEqual('/guide');
+    });
+});
+
+describe("Source document readiness", () => {
+    var viewer = null;
+
+    /* readyState is an accessor on Document.prototype, so an own property on the
+     * instance is how a test says what state the document is in. */
+    function setReadyState(iframe, readyState) {
+        Object.defineProperty(iframe.contentDocument, 'readyState',
+            {value: readyState, configurable: true});
+    }
+
+    /* A real jsdom iframe, because the readiness predicate reaches into the
+     * document with $(iframe).contents().find("body").children(). */
+    function makeIframe(readyState, hasBodyChildren) {
+        const iframe = document.createElement('iframe');
+        document.body.appendChild(iframe);
+        setReadyState(iframe, readyState);
+        iframe.contentDocument.body.innerHTML = hasBodyChildren ? '<div></div>' : '';
+        return iframe;
+    }
+
+    function becomeReady(iframe) {
+        setReadyState(iframe, 'complete');
+        iframe.contentDocument.body.innerHTML = '<div></div>';
+    }
+
+    beforeEach(() => {
+        jest.useFakeTimers();
+        document.body.innerHTML = '';
+        viewer = new iXBRLViewer({});
+    });
+
+    afterEach(() => {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+    });
+
+    test("An already-loaded document set resolves without waiting for a timer", () => {
+        const iframes = $(makeIframe('complete', true));
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady(iframes, onReady);
+
+        /* No timer has been allowed to run, so this can only have come from the
+         * synchronous first attempt. */
+        expect(onReady).toHaveBeenCalledTimes(1);
+        /* And nothing was armed that would have to be waited on or cleaned up. */
+        expect(jest.getTimerCount()).toBe(0);
+    });
+
+    test("An interactive document with content counts as ready", () => {
+        const iframes = $(makeIframe('interactive', true));
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady(iframes, onReady);
+
+        expect(onReady).toHaveBeenCalledTimes(1);
+    });
+
+    test("A document that is complete but still empty is not ready", () => {
+        const iframes = $(makeIframe('complete', false));
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady(iframes, onReady);
+
+        expect(onReady).not.toHaveBeenCalled();
+        expect(jest.getTimerCount()).toBe(1);
+    });
+
+    test("The poll backstop resolves the wait when no load event arrives", () => {
+        const iframe = makeIframe('loading', false);
+        /* Swallow the registration so the listener can never fire: 'load' is
+         * dispatched at readyState 'complete', which is strictly later than the
+         * 'interactive' the predicate accepts, so the poll has to be able to
+         * finish the job on its own. */
+        const registered = [];
+        iframe.addEventListener = (type) => registered.push(type);
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(iframe), onReady);
+
+        expect(registered).toEqual(['load']);
+        expect(onReady).not.toHaveBeenCalled();
+
+        jest.advanceTimersByTime(250);
+        expect(onReady).not.toHaveBeenCalled();
+
+        becomeReady(iframe);
+        jest.advanceTimersByTime(250);
+        expect(onReady).toHaveBeenCalledTimes(1);
+    });
+
+    test("The load event resolves the wait without waiting for the next poll", () => {
+        const iframe = makeIframe('loading', false);
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(iframe), onReady);
+        expect(onReady).not.toHaveBeenCalled();
+
+        becomeReady(iframe);
+        iframe.dispatchEvent(new Event('load'));
+
+        /* No timer has been advanced, so the event is the only thing that can
+         * have ended the wait. */
+        expect(onReady).toHaveBeenCalledTimes(1);
+        /* And the backstop interval is cleared once it has. */
+        expect(jest.getTimerCount()).toBe(0);
+    });
+
+    test("onReady is called once however many triggers fire", () => {
+        const iframe = makeIframe('loading', false);
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(iframe), onReady);
+        becomeReady(iframe);
+
+        iframe.dispatchEvent(new Event('load'));
+        iframe.dispatchEvent(new Event('load'));
+        jest.advanceTimersByTime(1000);
+
+        expect(onReady).toHaveBeenCalledTimes(1);
+    });
+
+    test("Every document must be ready, not just the first", () => {
+        const first = makeIframe('complete', true);
+        const second = makeIframe('loading', false);
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(first).add(second), onReady);
+
+        expect(onReady).not.toHaveBeenCalled();
+
+        becomeReady(second);
+        jest.advanceTimersByTime(250);
+        expect(onReady).toHaveBeenCalledTimes(1);
     });
 });

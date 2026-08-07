@@ -8,7 +8,7 @@ import { Inspector } from "./inspector.js";
 import { initializeTheme } from './theme.js';
 import { TaxonomyNamer } from './taxonomynamer.js';
 import { FEATURE_GUIDE_LINK, FEATURE_REVIEW, FEATURE_SUPPORT_LINK, FEATURE_SURVEY_LINK, USER_GUIDE_URL, moveNonAppAttributes } from "./util";
-import { ABLATE_LOAD, ABLATE_PROGRESS, POLL_FAST_MS, perfAdd, perfClose, perfCount, perfLoaderRemoved, perfMark, perfOpen, perfSpan } from "./perf.js";
+import { ABLATE_PROGRESS, perfAdd, perfClose, perfCount, perfLoaderRemoved, perfMark, perfOpen, perfSpan } from "./perf.js";
 
 const featureFalsyValues = new Set([undefined, null, '', 'false', false]);
 
@@ -250,6 +250,62 @@ export class iXBRLViewer {
         return iframe;
     }
 
+    /* Call onReady exactly once, as soon as every source document is loaded
+     * enough to walk.
+     *
+     * There is no single event that reliably says a document set is ready, so
+     * readiness stays a predicate, and three things trigger a test of it:
+     *
+     *  - immediately, before anything is armed.  setInterval does not fire until
+     *    +250ms, so polling alone makes an already-loaded document set wait a
+     *    quarter of a second for a test whose answer cannot change:
+     *    _reparentDocument() populates the first document synchronously.
+     *  - each iframe's "load" event, which is not subject to the timer throttling
+     *    the renderer applies while a large document is still loading.  A nominal
+     *    250ms poll was measured delivering 254-902ms per tick on large filings.
+     *  - the 250ms poll, retained as a backstop.  This is NOT redundant with the
+     *    listeners: "load" fires at readyState "complete", which is strictly later
+     *    than the "interactive" this predicate already accepts, so the poll is
+     *    what lets an interactive-but-not-complete document proceed.  Across a
+     *    ten-filing corpus the poll, rather than the event, ended the wait in 5 of
+     *    100 runs.  Removing it makes those loads hang.
+     */
+    _whenDocumentsReady(iframes, onReady) {
+        let timer = null;
+        let resolved = false;
+        const attempt = (how) => {
+            let complete = true;
+            iframes.each((n, iframe) => {
+                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                if ((iframeDoc.readyState !== 'complete' && iframeDoc.readyState !== 'interactive') || $(iframe).contents().find("body").children().length === 0) {
+                    complete = false;
+                }
+            });
+            if (complete && !resolved) {
+                resolved = true;
+                if (timer !== null) {
+                    clearInterval(timer);
+                }
+                perfCount(`iframeReady.${how}`);
+                perfMark('phase.loading.end');
+                onReady();
+            }
+        };
+        attempt('immediate');
+        if (!resolved) {
+            iframes.each((n, iframe) => {
+                iframe.addEventListener('load', () => {
+                    perfCount('iframeLoad.events');
+                    attempt('event');
+                });
+            });
+            timer = setInterval(() => {
+                perfCount('iframePoll.ticks');
+                attempt('poll');
+            }, 250);
+        }
+    }
+
     _getTaxonomyData() {
         for (let i = document.body.children.length - 1; i >= 0; i--) {
             const elt = document.body.children[i];
@@ -377,136 +433,79 @@ export class iXBRLViewer {
             perfMark('phase.loading.start');
             iv.setProgress(progress).then(() => {
                 perfMark('iframePoll.start');
-                /* Poll for iframe load completing - there doesn't seem to be a reliable event that we can use */
-                let timer = null;
-                let resolved = false;
-                /* The baseline's interval body, lifted out so ticket 05's arms can
-                 * schedule it differently without changing a byte of the readiness
-                 * predicate or of what happens once it passes. */
-                const attempt = (how) => {
-                    let complete = true;
+                iv._whenDocumentsReady(iframes, () => {
                     iframes.each((n, iframe) => {
-                        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-                        if ((iframeDoc.readyState !== 'complete' && iframeDoc.readyState !== 'interactive') || $(iframe).contents().find("body").children().length === 0) {
-                            complete = false;
+                        const htmlNode = $(iframe).contents().find('html');
+                        // A schema valid report should not have a lang attribute on the html element.
+                        // However, if the report is not schema valid, we shouldn't override it.
+                        if (htmlNode.attr('lang') === undefined) {
+                            // If the report has an XML lang attribute, use it as the HTML lang for screen readers.
+                            // If the language of the report can't be detected, set it to an empty string to avoid
+                            // inheriting the lang of the application HTML node (which is set to the UI language).
+                            const docLang = htmlNode.attr('xml:lang') || '';
+                            htmlNode.attr('lang', docLang);
                         }
                     });
-                    if (resolved || !complete) {
-                        return;
-                    }
-                    resolved = true;
-                    if (timer !== null) {
-                        clearInterval(timer);
-                    }
-                    /* Which mechanism ended the wait.  Exactly one of these is 1 on
-                     * any run, and on an event-driven arm a 'poll' here means the
-                     * event was not enough. */
-                    perfCount(`iframeReady.${how}`);
-                    perfMark('phase.loading.end');
 
-                        iframes.each((n, iframe) => {
-                            const htmlNode = $(iframe).contents().find('html');
-                            // A schema valid report should not have a lang attribute on the html element.
-                            // However, if the report is not schema valid, we shouldn't override it.
-                            if (htmlNode.attr('lang') === undefined) {
-                                // If the report has an XML lang attribute, use it as the HTML lang for screen readers.
-                                // If the language of the report can't be detected, set it to an empty string to avoid
-                                // inheriting the lang of the application HTML node (which is set to the UI language).
-                                const docLang = htmlNode.attr('xml:lang') || '';
-                                htmlNode.attr('lang', docLang);
+                    const viewer = perfSpan('viewer.construct', () => new Viewer(iv, iframes, reportSet));
+                    iv.viewer = viewer
+
+                    perfOpen('viewer.initialize');
+                    viewer.initialize()
+                        .then(() => {
+                            perfClose('viewer.initialize');
+                            perfOpen('inspector.initialize');
+                            return inspector.initialize(reportSet, viewer);
+                        })
+                        .then(() => {
+                            perfClose('inspector.initialize');
+                            perfOpen('interact.configure');
+                            interact('#pane-left').resizable({
+                                edges: { left: false, right: ".resize", bottom: false, top: false},
+                                restrictEdges: {
+                                    outer: 'parent',
+                                    endOnly: true,
+                                },
+                                restrictSize: {
+                                    min: { width: 100 }
+                                },
+                            })
+                            .on('resizestart', () => {
+                                $('#ixv').css("pointer-events", "none");
+                                $('#pane-left').css("flex-grow", 0);
+                            }
+                            )
+                            .on('resizemove', (event) => {
+                                const target = event.target;
+                                const w = 100 * event.rect.width / $(target).parent().width();
+                                target.style.width = `${w}%`;
+                            })
+                            .on('resizeend', (event) =>
+                                $('#ixv').css("pointer-events", "auto")
+                            );
+                            perfClose('interact.configure');
+                            $('#ixv .loader').remove();
+                            perfLoaderRemoved();
+
+                            /* Focus on fact specified in URL fragment, if any */
+                            if (iv.options.showValidationWarningOnStart) {
+                                inspector.showValidationWarning();
+                            }
+                            viewer.postLoadAsync();
+                            inspector.postLoadAsync();
+                        })
+                        .catch(err => {
+                            if (err instanceof DocumentTooLargeError) {
+                                $('#ixv .loader').remove();
+                                perfMark('documentTooLarge');
+                                perfLoaderRemoved();
+                                $('#inspector').addClass('failed-to-load');
+                            }
+                            else {
+                                throw err;
                             }
                         });
-
-                        const viewer = perfSpan('viewer.construct', () => new Viewer(iv, iframes, reportSet));
-                        iv.viewer = viewer
-
-                        perfOpen('viewer.initialize');
-                        viewer.initialize()
-                            .then(() => {
-                                perfClose('viewer.initialize');
-                                perfOpen('inspector.initialize');
-                                return inspector.initialize(reportSet, viewer);
-                            })
-                            .then(() => {
-                                perfClose('inspector.initialize');
-                                perfOpen('interact.configure');
-                                interact('#pane-left').resizable({
-                                    edges: { left: false, right: ".resize", bottom: false, top: false},
-                                    restrictEdges: {
-                                        outer: 'parent',
-                                        endOnly: true,
-                                    },
-                                    restrictSize: {
-                                        min: { width: 100 }
-                                    },
-                                })
-                                .on('resizestart', () => {
-                                    $('#ixv').css("pointer-events", "none");
-                                    $('#pane-left').css("flex-grow", 0);
-                                }
-                                )
-                                .on('resizemove', (event) => {
-                                    const target = event.target;
-                                    const w = 100 * event.rect.width / $(target).parent().width();
-                                    target.style.width = `${w}%`;
-                                })
-                                .on('resizeend', (event) =>
-                                    $('#ixv').css("pointer-events", "auto")
-                                );
-                                perfClose('interact.configure');
-                                $('#ixv .loader').remove();
-                                perfLoaderRemoved();
-
-                                /* Focus on fact specified in URL fragment, if any */
-                                if (iv.options.showValidationWarningOnStart) {
-                                    inspector.showValidationWarning();
-                                }
-                                viewer.postLoadAsync();
-                                inspector.postLoadAsync();
-                            })
-                            .catch(err => {
-                                if (err instanceof DocumentTooLargeError) {
-                                    $('#ixv .loader').remove();
-                                    perfMark('documentTooLarge');
-                                    perfLoaderRemoved();
-                                    $('#inspector').addClass('failed-to-load');
-                                }
-                                else {
-                                    throw err;
-                                }
-
-                            });
-                };
-                const tick = () => {
-                    /* One count per 250ms tick, not per iframe: the tick total is
-                     * how much of this phase is pure polling latency. */
-                    perfCount('iframePoll.ticks');
-                    attempt('poll');
-                };
-                if (ABLATE_LOAD === 'none') {
-                    timer = setInterval(tick, 250);
-                }
-                else {
-                    /* setInterval fires first at +250ms, so the baseline pays a
-                     * whole tick even when the answer is already yes.  Every arm
-                     * here asks first and arms the interval only if the answer is
-                     * no. */
-                    attempt('immediate');
-                    if (!resolved) {
-                        if (ABLATE_LOAD === 'loadevent') {
-                            iframes.each((n, iframe) => {
-                                iframe.addEventListener('load', () => {
-                                    perfCount('iframeLoad.events');
-                                    attempt('event');
-                                });
-                            });
-                        }
-                        /* The 250ms interval stays on the event arm as a backstop,
-                         * so a missed event costs latency rather than a viewer that
-                         * never loads - and iframeReady.poll then says so. */
-                        timer = setInterval(tick, ABLATE_LOAD === 'pollfast' ? POLL_FAST_MS : 250);
-                    }
-                }
+                });
             });
         }, 0);
     }

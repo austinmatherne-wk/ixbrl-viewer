@@ -189,12 +189,17 @@ export function setDefault(obj, key, def) {
     return obj[key];
 }
 
-/*
- * Ticket 04 instrumentation and arms, plus wrapper-loop's onDone.  The second
- * argument is a hop-counter label (string) or onDone (function); the third is
- * onDone when a label is passed.  Feature tests call runGenerator(gen, onDone);
- * instrumented call sites pass a label.  onDone runs after the generator
- * completes, which is after perfWatchGenerator marks the drain end.
+/**
+ * Run a generator to completion, one slice per task.  Isolation of
+ * messagechannel-rungenerator made MessageChannel the default post; wrapper-loop
+ * added onDone.  The second argument is a hop-counter label (string) or onDone
+ * (function); the third is onDone when a label is passed.  onDone runs after
+ * the generator completes, which is after perfWatchGenerator marks the drain
+ * end — so searchReady / the startup query sit after the drained mark.
+ *
+ * One channel per call, never a shared one: both post-load drains are in flight
+ * at the same time, so a single pending slot would drop a resume and hang the
+ * load.
  */
 const YIELD_BUDGET_MS = 5;
 
@@ -237,16 +242,16 @@ export function runGenerator(generator, labelOrOnDone, onDone) {
         return;
     }
 
-    if (ABLATE_SCHED === 'yieldmsg' || ABLATE_SCHED === 'yieldboth') {
-        /* One channel per generator, not one shared: both drain generators are in
-         * flight at once, so a single pending slot would drop a resume and hang
-         * the load. */
+    if (ABLATE_SCHED === 'yieldsched') {
+        post = () => scheduler.yield().then(resume);
+    }
+    else if (ABLATE_SCHED === 'none' || ABLATE_SCHED === 'yieldmsg' || ABLATE_SCHED === 'yieldboth' || ABLATE_SCHED === 'yieldbudget') {
+        /* Feature default: MessageChannel.  yieldmsg/yieldboth already used this
+         * path; none now does too.  yieldbudget still MessageChannel-posts, it
+         * only changes how many slices run per hop. */
         const channel = new MessageChannel();
         channel.port1.onmessage = () => resume();
         post = () => channel.port2.postMessage(0);
-    }
-    else if (ABLATE_SCHED === 'yieldsched') {
-        post = () => scheduler.yield().then(resume);
     }
     else {
         post = () => setTimeout(resume, 0);

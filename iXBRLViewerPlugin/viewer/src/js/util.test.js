@@ -2,26 +2,8 @@
 
 import { xbrlDateToMoment, momentToHuman, formatNumber, wrapLabel, escapeRegex, truncateLabel, getIXHiddenLinkStyle, runGenerator } from "./util.js"
 import moment from 'moment';
+import { MessageChannel as NodeMessageChannel } from 'worker_threads';
 import "./moment-jest.js";
-
-describe("runGenerator", () => {
-    beforeEach(() => jest.useFakeTimers());
-    afterEach(() => jest.useRealTimers());
-
-    test("calls onDone after the generator finishes", () => {
-        const onDone = jest.fn();
-        function* generator() {
-            yield;
-        }
-
-        runGenerator(generator(), onDone);
-        jest.advanceTimersToNextTimer();
-        expect(onDone).not.toHaveBeenCalled();
-
-        jest.advanceTimersToNextTimer();
-        expect(onDone).toHaveBeenCalledTimes(1);
-    });
-});
 
 describe("xbrlDateToMoment", () => {
     test("Untimezoned dates should be treated as UTC", () => {
@@ -194,4 +176,105 @@ describe("Get IX Hidden Link Style", () => {
         const id = getIXHiddenLinkStyle(domNode);
         expect(id).toEqual(null);
     })
+});
+
+describe("runGenerator", () => {
+    /* jsdom does not implement MessageChannel, so the test environment borrows
+     * Node's - a real implementation, delivering each message as its own task,
+     * rather than a setTimeout stub that would only test itself.
+     *
+     * What it does NOT reproduce is the ordering *between* two channels: a
+     * browser drains one message queue in post order, so two generators in
+     * flight interleave slice by slice, while Node runs each port's backlog to
+     * exhaustion in turn.  So nothing here may assert on interleaving; that
+     * belongs to the harness, not to jsdom.
+     *
+     * The ports are closed after each test because an open MessagePort holds
+     * Node's event loop open.  runGenerator deliberately never closes its
+     * channel: in a browser it simply becomes unreachable once the generator is
+     * done, and closing it here stands in for that. */
+    const savedMessageChannel = global.MessageChannel;
+    let channels;
+
+    beforeEach(() => {
+        channels = [];
+        global.MessageChannel = jest.fn(() => {
+            const channel = new NodeMessageChannel();
+            channels.push(channel);
+            return channel;
+        });
+    });
+
+    afterEach(() => {
+        channels.forEach(c => { c.port1.close(); c.port2.close(); });
+        global.MessageChannel = savedMessageChannel;
+    });
+
+    /* Appends "<name><i>" once per slice, then resolves.  The resolve runs on the
+     * next() after the last yield - the call that returns done - so awaiting it
+     * awaits the whole run. */
+    function* slices(log, name, count, done) {
+        for (let i = 0; i < count; i++) {
+            log.push(name + i);
+            yield;
+        }
+        done();
+    }
+
+    /* Two nested timers, so anything runGenerator has left queued has had its
+     * turn by the time this resolves. */
+    function drainTasks() {
+        return new Promise(resolve => setTimeout(() => setTimeout(resolve, 0), 0));
+    }
+
+    test("Runs every slice, in order", async () => {
+        const log = [];
+        await new Promise(resolve => runGenerator(slices(log, "a", 4, resolve)));
+        expect(log).toEqual(["a0", "a1", "a2", "a3"]);
+    });
+
+    test("No slice runs synchronously", async () => {
+        const log = [];
+        const run = new Promise(resolve => runGenerator(slices(log, "a", 2, resolve)));
+        expect(log).toEqual([]);
+        await run;
+        expect(log).toEqual(["a0", "a1"]);
+    });
+
+    /* The post-load drain runs two generators at once, so this is the case that
+     * bites: a channel shared between calls has one onmessage slot, the second
+     * call overwrites the first's handler, and the first generator never resumes
+     * - the load hangs with the loader still on screen.  Both halves are
+     * asserted, because the count alone would pass an implementation that made a
+     * channel per call and then never used it, and completion alone takes a
+     * whole jest timeout to fail. */
+    test("Two generators in flight at once both complete, on channels of their own", async () => {
+        const log = [];
+        await Promise.all([
+            new Promise(resolve => runGenerator(slices(log, "a", 3, resolve))),
+            new Promise(resolve => runGenerator(slices(log, "b", 3, resolve))),
+        ]);
+        expect(log.filter(s => s.startsWith("a"))).toEqual(["a0", "a1", "a2"]);
+        expect(log.filter(s => s.startsWith("b"))).toEqual(["b0", "b1", "b2"]);
+        expect(global.MessageChannel).toHaveBeenCalledTimes(2);
+        expect(channels[0]).not.toBe(channels[1]);
+    });
+
+    test("A generator with no slices terminates without asking for another", async () => {
+        const next = jest.fn(() => ({ done: true, value: undefined }));
+        runGenerator({ next });
+        await drainTasks();
+        expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    test("calls onDone after the generator finishes", async () => {
+        const onDone = jest.fn();
+        function* generator() {
+            yield;
+        }
+        runGenerator(generator(), onDone);
+        expect(onDone).not.toHaveBeenCalled();
+        await drainTasks();
+        expect(onDone).toHaveBeenCalledTimes(1);
+    });
 });

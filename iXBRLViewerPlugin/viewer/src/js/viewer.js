@@ -190,9 +190,16 @@ export class Viewer {
             }
             else if (this.nodeType === Node.TEXT_NODE) {
                 const input = this.nodeValue;
-                const output = $("<div></div>");
+                // Built on the first match.  Most text nodes in a filing contain
+                // nothing the matcher wants, and for those the rewrite below
+                // replaces the node with a copy of itself, so both the div and the
+                // replacement can be skipped entirely.
+                let output = null;
                 let pos = 0;
                 numberMatchSearch(input, function (m, do_not_want, is_date) {
+                    if (output === null) {
+                        output = $("<div></div>");
+                    }
                     if (m.index > pos) {
                         output.append(document.createTextNode(input.substring(pos, m.index)));
                     }
@@ -211,6 +218,17 @@ export class Viewer {
                     }
                     pos = m.index + m[0].length;
                 });
+                if (output === null) {
+                    // Nothing matched.  Leaving the node alone is what the rewrite
+                    // below would have produced anyway - a fresh text node holding
+                    // the same string, in the same position.  A zero-length node is
+                    // the one exception: replaceWith() on empty content removes it,
+                    // so that case still falls through and is still removed.
+                    if (input.length > 0) {
+                        return;
+                    }
+                    output = $("<div></div>");
+                }
                 if (pos < input.length) {
                     output.append(document.createTextNode(input.substring(pos, input.length)));
                 }

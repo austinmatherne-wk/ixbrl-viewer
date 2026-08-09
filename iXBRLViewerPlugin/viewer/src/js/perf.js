@@ -290,7 +290,13 @@ export const ABLATE_UNTAGGED = UNTAGGED_ARMS.includes(ABLATE) ? ABLATE : 'none';
  * not happened for the reason this ticket claims.
  */
 const SCHED_ARMS = ['yieldmsg', 'yieldbudget', 'yieldboth', 'yieldsched'];
-export const ABLATE_SCHED = SCHED_ARMS.includes(ABLATE) ? ABLATE : 'none';
+/* searchnoindexmsg is ticket 12's combined arm and it selects yieldmsg here as
+ * well as its own ablation below - the one place in this file where a single
+ * ?ixvablate value drives two families.  ABLATE holds exactly one arm
+ * (perf.js:226), so a two-ticket question needs a two-family arm; ticket 07's
+ * drainbatchednopass1 did the same thing by hand inside postProcess. */
+export const ABLATE_SCHED = SCHED_ARMS.includes(ABLATE) ? ABLATE
+    : (ABLATE === 'searchnoindexmsg' ? 'yieldmsg' : 'none');
 
 /*
  * Ticket 05's arms, on how the viewer decides the source documents are ready.
@@ -398,6 +404,109 @@ export const POLL_FAST_MS = 10;
  */
 const PROGRESS_ARMS = ['progsync', 'prognoprepare'];
 export const ABLATE_PROGRESS = PROGRESS_ARMS.includes(ABLATE) ? ABLATE : 'none';
+
+/*
+ * Ticket 12's arms, on ReportSearch.buildSearchIndex - the inspector half of the
+ * post-load drain.  Report entry #5 sizes this pass at 285.7ms worst-filing,
+ * breadth 10/10, and 4.1-4.6x under a 4x throttle, so it is entirely CPU-bound.
+ * The ticket lists three candidate directions and they are NESTED, which is what
+ * makes two arms enough to price all three:
+ *
+ *   direction 1  move the whole build off the startup path (scheduling)
+ *   direction 2  index fewer fields, or resolve labels lazily
+ *   direction 3  a cheaper index structure than lunr
+ *
+ * 1 removes everything 2 and 3 could remove and more, so its ceiling DOMINATES
+ * both.  If direction 1's ceiling does not move a window, neither can 2 or 3, and
+ * the ticket declines on one measurement.  This is ticket 26's shape - measure the
+ * ceiling first - and it is why neither of these arms is a candidate change.
+ *
+ *   searchnoindex     buildSearchIndex returns immediately: no fact scan, no
+ *                     documents, no lunr, and doneCallback is never invoked, so
+ *                     searchReady() never runs.  UNSHIPPABLE - search never works
+ *                     at all - and it is not what "defer to first search" would
+ *                     do either, because a deferred build still has to enable the
+ *                     search box and populate the period filter.  Against none it
+ *                     is the CEILING of direction 1, and therefore of the whole
+ *                     ticket.  Quote it as a ceiling and never as a payoff: the
+ *                     map has three prior instances (tickets 07, 09, 26) of an arm
+ *                     being read as the fix it merely bounds.
+ *   searchnoindexmsg  searchnoindex AND ticket 20's MessageChannel resume, the
+ *                     only arm here that combines two tickets'.  It exists because
+ *                     the ceiling above is measured in a world ticket 20 is about
+ *                     to leave.  On seven of ten fixtures the search generator is
+ *                     the TAIL of the drain and its hops are most of the drain gap
+ *                     - sec-lennar-stub pays 69 hops against a 4ms clamp inside a
+ *                     648ms gap - and those are the same hops ticket 20 claims
+ *                     -300.7ms of.  So against yieldmsg this is the ceiling in the
+ *                     world where ticket 22 merges, and the difference between the
+ *                     two pairings is the overlap neither ticket may bank twice.
+ *                     Ticket 07's drainbatchednopass1 is the precedent.
+ *   searchnolunr      the documents are built exactly as the baseline builds them
+ *                     and the yields are kept - the doc loop, the add loop's yield
+ *                     cadence, all of it - but builder.add() and builder.build()
+ *                     do not run and _searchIndex becomes a stub returning every
+ *                     document at score 0.  Keeping the yields is the whole point:
+ *                     a cheaper index structure still has to walk the documents and
+ *                     would still yield, so an arm that dropped the add loop's
+ *                     yields would bill direction 3 for scheduling it does not
+ *                     save.  Against none: the ceiling of directions 2 and 3
+ *                     together, since neither can beat lunr costing nothing.
+ *                     UNSHIPPABLE: the stub answers every query with every fact.
+ *                     The stub is score-0-everything on purpose - that is exactly
+ *                     what lunr 2.3.9 returns for the empty string (ticket 13's
+ *                     note), so doneCallback still builds its SEARCH_PAGE_SIZE
+ *                     rows and its span stays comparable.  Document ORDER may
+ *                     differ from lunr's, which is why this arm is barred from the
+ *                     identity gate rather than expected to pass it.
+ *
+ * The guards.  All three arms run entirely AFTER $('#ixv .loader').remove()
+ * (ixbrlviewer.js:449-453), so:
+ *
+ *   windows.toLoaderRemoved      must be a null on every arm.  A resolved move
+ *                                here means the arm is not doing what it says.
+ *   drain.viewer.containsAbsolute / .pass1Layout / .noHighlight
+ *                                the viewer generator's counters.  No search arm
+ *                                has any business touching them, and they are the
+ *                                rule that already caught a 19-second false
+ *                                finding.
+ *   factList.rowsBuilt / .htmlHiddenTests / outline.* / continuationMaps.*
+ *                                every startup volume, all fixed before the drain
+ *                                begins.
+ *
+ * The mechanism counters, which these arms ARE entitled to move, and which is
+ * which per arm:
+ *
+ *   drain.search.factCount / .docsBuilt   0 on both searchnoindex arms, identical
+ *                                         to none on searchnolunr.
+ *   drain.search.yields                   0 on both searchnoindex arms.  On
+ *                                         searchnolunr it must equal none's,
+ *                                         because the add loop keeps its yield.
+ *   searchList.rowsBuilt / .htmlHiddenTests
+ *                                         0 on both searchnoindex arms
+ *                                         (doneCallback never runs), identical to
+ *                                         none on searchnolunr.
+ *   sched.hops.search                     the scheduling half of the delta.  It
+ *                                         goes to 0 on the searchnoindex arms -
+ *                                         the generator completes on its first
+ *                                         resume - and is unchanged on
+ *                                         searchnolunr by construction.
+ *   sched.hops.viewer                     NOT a guard, and this is the subtle one.
+ *                                         Both drain generators are in flight at
+ *                                         once, so removing the search generator's
+ *                                         slices lets the viewer's run back to
+ *                                         back.  Its hop COUNT should hold while
+ *                                         viewer.postLoadAsync.end moves earlier;
+ *                                         that is the interleave being removed,
+ *                                         not work.
+ *
+ * Both frame-lag columns are carried.  Direction 1 is a scheduling change by the
+ * map's definition, and the map's rule is that work removed from startup has three
+ * places to reappear - the next phase that reads layout, the drain's first layout
+ * reader, and the first paint.  Only frameLag can see the third.
+ */
+const SEARCH_ARMS = ['searchnoindex', 'searchnoindexmsg', 'searchnolunr'];
+export const ABLATE_SEARCH = SEARCH_ARMS.includes(ABLATE) ? ABLATE : 'none';
 
 /*
  * Ticket 08's rider, carried by rowdefer only.  Resolved once at module load so

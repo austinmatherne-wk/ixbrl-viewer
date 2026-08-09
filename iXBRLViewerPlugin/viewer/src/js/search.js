@@ -1,7 +1,7 @@
 // See COPYRIGHT.md for copyright information
 
 import lunr from 'lunr'
-import { perfAdd, perfCount, perfNow, perfSpan } from './perf.js';
+import { ABLATE_SEARCH, perfAdd, perfCount, perfNow, perfSpan } from './perf.js';
 
 export class ReportSearch {
     constructor(reportSet) {
@@ -16,6 +16,20 @@ export class ReportSearch {
      * the viewer's drain pass and is not this pass's own work.
      */
     * buildSearchIndex(doneCallback) {
+        /* Ticket 12's ceiling arms.  Returning here removes the whole inspector
+         * half of the drain: no fact scan, no documents, no lunr, and no
+         * doneCallback - so searchReady() never runs and the search box is never
+         * enabled.  Unshippable by construction; see perf.js for why the ceiling
+         * is what decides this ticket.  The volume counters are emitted as
+         * explicit zeros rather than left missing, so a guard table can tell an
+         * ablated arm from a broken run. */
+        if (ABLATE_SEARCH === 'searchnoindex' || ABLATE_SEARCH === 'searchnoindexmsg') {
+            perfCount('drain.search.factCount', 0);
+            perfCount('drain.search.docsBuilt', 0);
+            perfCount('drain.search.yields', 0);
+            return;
+        }
+        const noLunr = ABLATE_SEARCH === 'searchnolunr';
         var docs = [];
         var dims = {};
         /* Uncached full scan over every report - ticket 10 counted the calls; this
@@ -84,31 +98,41 @@ export class ReportSearch {
         perfCount('drain.search.docsBuilt', docs.length);
         acc = 0;
         t = perfNow();
-        const builder = new lunr.Builder();
-        builder.pipeline.add(
-          lunr.trimmer,
-          lunr.stopWordFilter,
-          lunr.stemmer
-        )
+        /* Ticket 12's searchnolunr: the builder is never constructed, never fed
+         * and never built.  Everything else in this loop - the iteration, the
+         * yield every hundredth document - is the baseline's, because a cheaper
+         * index structure would still have to walk the documents and would still
+         * yield.  An arm that dropped the yield too would bill direction 3 for
+         * scheduling it does not save. */
+        let builder = null;
+        if (!noLunr) {
+            builder = new lunr.Builder();
+            builder.pipeline.add(
+              lunr.trimmer,
+              lunr.stopWordFilter,
+              lunr.stemmer
+            )
 
-        builder.searchPipeline.add(
-          lunr.stemmer
-        )
+            builder.searchPipeline.add(
+              lunr.stemmer
+            )
 
-        builder.ref('id');
-        builder.field('label');
-        builder.field('concept');
-        builder.field('startDate');
-        builder.field('date');
-        builder.field('doc');
-        builder.field('ref');
-        builder.field('widerLabel');
-        builder.field('widerDoc');
-        builder.field('widerConcept');
-
+            builder.ref('id');
+            builder.field('label');
+            builder.field('concept');
+            builder.field('startDate');
+            builder.field('date');
+            builder.field('doc');
+            builder.field('ref');
+            builder.field('widerLabel');
+            builder.field('widerDoc');
+            builder.field('widerConcept');
+        }
 
         for (const [i, doc] of docs.entries()) {
-            builder.add(doc);
+            if (!noLunr) {
+                builder.add(doc);
+            }
             if (i % 100 === 0) {
                 acc += perfNow() - t;
                 yield;
@@ -120,7 +144,15 @@ export class ReportSearch {
          * above, which is a fixed dozen field declarations. */
         perfAdd('drain.search.lunrAdd', acc + perfNow() - t);
         perfCount('drain.search.yields', yields);
-        this._searchIndex = perfSpan('drain.search.lunrBuild', () => builder.build());
+        /* The stub answers every query with every document at score 0, which is
+         * exactly what lunr 2.3.9 returns for the empty string - so doneCallback
+         * still runs the startup query, still gets a non-empty result set and
+         * still builds its SEARCH_PAGE_SIZE rows, and its span stays comparable
+         * with the baseline's.  The ORDER is insertion order rather than lunr's,
+         * which is why this arm is barred from the identity gate. */
+        this._searchIndex = perfSpan('drain.search.lunrBuild', () => noLunr
+            ? { search: () => docs.map(d => ({ ref: d.id, score: 0 })) }
+            : builder.build());
         this.ready = true;
         perfSpan('drain.search.doneCallback', doneCallback);
     }

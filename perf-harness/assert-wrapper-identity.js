@@ -29,6 +29,24 @@
 //             ordering control needs its output *order* checked and not just its
 //             output, and for this arm the class attribute is that order.
 //
+// INSPECTOR_ROWS=1 adds a fourth, and it is a different kind of signature: all
+// three above are taken over the *report* documents, so an arm whose only output
+// is inspector DOM passes them no matter what it does.  Ticket 08 found that,
+// and ticket 24 is the arm it found it for.
+//
+//   rows      every fact list row in the inspector, in document order, as its
+//             ordered list of tag texts - taken AFTER expanding every outline
+//             section and switching to the search pane, because ticket 24's arm
+//             defers the concealed-fact tag to exactly those two events and the
+//             signature would otherwise differ for the trivial reason that the
+//             tags have not been built yet.  Off by default so that the three
+//             report signatures other tickets use stay byte-identical runs.
+//
+// Read the `rows` result with ticket 08 §6 in hand: htmlHiddenTrue is 0 on all
+// nine outline-bearing fixtures, so this signature matches because the tag fires
+// nowhere, not because the tagging is right.  It can only catch a row that gains
+// or loses a tag it should not have; the unit tests are the real verification.
+//
 // Exit status is 1 if any arm's signature differs from the first arm's, so this
 // is usable as a gate rather than something to read.
 const { spawn } = require('child_process');
@@ -135,6 +153,51 @@ async function signatures() {
     };
 }
 
+/*
+ * Runs in-page, after signatures().  Shows everything a deferred row tag could
+ * be waiting on, then signs the rows.  Clicking the real controls rather than
+ * calling the inspector directly keeps this a test of what a user's two clicks
+ * produce.
+ */
+async function inspectorRowSignature() {
+    const click = (selectors) => {
+        for (const sel of selectors) {
+            const e = document.querySelector(sel);
+            if (e !== null) {
+                e.click();
+                return sel;
+            }
+        }
+        return null;
+    };
+    const expanded = click(['#inspector .fact-inspector .expand-all-sections',
+        '#expand-all-sections']);
+    const searched = click(['#inspector-tabs button[data-mode="search-mode"]',
+        '#inspector-tabs [data-mode="search-mode"]']);
+    /* One frame, so anything a click scheduled has run before the read. */
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const rows = [...document.querySelectorAll('#inspector .fact-list-item')];
+    const parts = rows.map((row, i) => {
+        const tags = [...row.querySelectorAll('.block-list-item-tags > div')]
+            .map(t => t.textContent);
+        return `${i}:${tags.join('/')}`;
+    });
+    const hash = async (s) => {
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+        return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+    };
+    return {
+        expandedVia: expanded,
+        searchedVia: searched,
+        inspectorRows: rows.length,
+        inspectorTags: parts.reduce((n, p) => n + (p.split(':')[1] === '' ? 0 : p.split(':')[1].split('/').length), 0),
+        /* Must be 0: a row still marked pending after both clicks is a row the
+         * deferral has stranded, which is the failure mode this arm risks. */
+        pendingRows: document.querySelectorAll('#inspector .concealed-tag-pending').length,
+        rowsHash: await hash(parts.join('|')),
+    };
+}
+
 async function main() {
     const want = process.argv.slice(2);
     let all = fixtures();
@@ -167,8 +230,12 @@ async function main() {
             await page.goto(url, { waitUntil: 'load', timeout });
             await page.waitForFunction(() => window.IXVPERF?.done === true, { timeout, polling: 250 });
             byArm[armName] = await page.evaluate(signatures);
+            if (process.env.INSPECTOR_ROWS === '1') {
+                Object.assign(byArm[armName], await page.evaluate(inspectorRowSignature));
+            }
             process.stderr.write(`dom=${byArm[armName].domHash} classAttr=${byArm[armName].classAttrHash} `
-                + `wrapper=${byArm[armName].wrapperHash}\n`);
+                + `wrapper=${byArm[armName].wrapperHash}`
+                + (byArm[armName].rowsHash ? ` rows=${byArm[armName].rowsHash}` : '') + `\n`);
             await page.close();
         }
         const base = byArm[ARMS[0]];

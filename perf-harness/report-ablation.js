@@ -144,6 +144,27 @@ const METRICS = [
     ['phase.inspectorInit', 'inspectorInit', 'ms'],
     ['spans.setProgress.wait.ms', 'progressWait', 'ms'],
     ['spans.setProgress.wait.n', 'progressHops', 'n'],
+    /* Ticket 24's arm relocates the fact-list row's isHTMLHidden() test rather
+     * than deleting it, and ticket 08 §4 found the row path has TWO sites: the
+     * outline rows in inspectorInit (rowMs above) and up to SEARCH_PAGE_SIZE
+     * search rows inside the drain, which that span does not cover.  So the two
+     * sites get a span and a test counter each, and they are read against
+     * different windows - rowMs against loaderRemoved, searchRowMs against
+     * drainGap.
+     *
+     * The two hhTests counters are the mechanism, not a guard: on rowdefer and
+     * rownohide they must go to zero, because "no row makes this test during
+     * startup" is the entire claim.  rowsShown and tagged are the other half -
+     * during a measured load nothing is ever shown, so a non-zero value there
+     * means the deferral is paying itself back inside the window it claims to
+     * have left. */
+    ['spans.inspector.searchResultRows.ms', 'searchRowMs', 'ms'],
+    ['spans.inspector.tagConcealedFacts.ms', 'tagMs', 'ms'],
+    ['counts.factList.htmlHiddenTests', 'hhTestsOutline', 'n'],
+    ['counts.searchList.htmlHiddenTests', 'hhTestsSearch', 'n'],
+    ['counts.searchList.rowsBuilt', 'searchRows', 'n'],
+    ['counts.rowDefer.rowsShown', 'rowsShown', 'n'],
+    ['counts.rowDefer.tagged', 'taggedRows', 'n'],
 ];
 
 const median = (xs) => {

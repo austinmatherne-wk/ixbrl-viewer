@@ -80,6 +80,21 @@ export const PERF_DEEP = ON && LEVEL === 'deep';
  *                         tests are all resolved before any of its rows is built.
  *                         Against none: what interleaving costs.  Against
  *                         rownohide: what the reads cost once uninterleaved.
+ *   rowdefer              ticket 24's proposed fix, and the arm to measure before
+ *                         claiming its payoff.  Neither an ablation nor a
+ *                         reordering: the test still runs for every row and every
+ *                         tag is still emitted, but not until the row's container
+ *                         is first shown - a collapsed outline section being
+ *                         expanded, or the search pane becoming the active pane.
+ *                         Nothing is shown during startup, so within both windows
+ *                         it should land where rownohide does; against rownohide
+ *                         it prices the difference between relocating the test and
+ *                         deleting it.  It carries ticket 08's rider too: the
+ *                         ':hidden' test filters .ixbrl-contains-absolute rather
+ *                         than .ixbrl-no-highlight (see HTML_HIDDEN_FILTER), which
+ *                         is inert at startup on this arm because no row tests
+ *                         anything there, and leaves `none` byte-identical to
+ *                         master.
  *
  * Ticket 11's arms, on viewer.postProcess() - the forced-layout pass inside the
  * post-load drain, and the third place t05's absolute sub-nodes are paid for:
@@ -337,6 +352,15 @@ export const POLL_FAST_MS = 10;
  */
 const PROGRESS_ARMS = ['progsync', 'prognoprepare'];
 export const ABLATE_PROGRESS = PROGRESS_ARMS.includes(ABLATE) ? ABLATE : 'none';
+
+/*
+ * Ticket 08's rider, carried by rowdefer only.  Resolved once at module load so
+ * that the `none` arm's htmlHidden() is the same statement master runs, rather
+ * than master's statement with a branch in front of it.
+ */
+export const HTML_HIDDEN_FILTER = ABLATE === 'rowdefer'
+    ? ':not(.ixbrl-contains-absolute)'
+    : ':not(.ixbrl-no-highlight)';
 
 const now = () => performance.now();
 

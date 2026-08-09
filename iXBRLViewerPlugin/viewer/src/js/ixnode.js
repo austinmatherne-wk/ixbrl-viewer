@@ -2,6 +2,7 @@
 
 import $ from 'jquery';
 import { isTransparent } from './util.js';
+import { HTML_HIDDEN_FILTER } from './perf.js';
 
 /*
  * Object to hold information related to iXBRL nodes in the HTML document.
@@ -46,6 +47,6 @@ export class IXNode {
     }
 
     htmlHidden() {
-        return this.wrapperNodes.filter(':not(.ixbrl-no-highlight)').is(':hidden') || this.wrapperNodes.is((i,e) => isTransparent($(e).css('color')));
+        return this.wrapperNodes.filter(HTML_HIDDEN_FILTER).is(':hidden') || this.wrapperNodes.is((i,e) => isTransparent($(e).css('color')));
     }
 }

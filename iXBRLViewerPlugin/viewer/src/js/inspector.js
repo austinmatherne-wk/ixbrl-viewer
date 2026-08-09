@@ -25,6 +25,10 @@ import { ABLATE, PERF_DEEP, perfAdd, perfClose, perfCount, perfDeepNow, perfMark
 
 const SEARCH_PAGE_SIZE = 100
 const SECTION_LIST_SECTIONS = "#inspector .facts-by-group > .collapsible-section";
+const SEARCH_RESULTS = "#inspector .search-results .results";
+/* Ticket 24's rowdefer arm: a row still owed its concealed-fact tag. */
+const CONCEALED_TAG_PENDING = "concealed-tag-pending";
+const CONCEALED_TAG_FACT = "concealedTagFact";
 const SEARCH_FILTER_MULTISELECTS = {
   visibilityFilter: "search-filter-visibility",
   conceptTypeFilter: "search-filter-concept-type",
@@ -55,6 +59,14 @@ const ROW_SEG_KEYS = ['create', 'title', 'datatype', 'period', 'aspects', 'tags'
     'htmlHiddenTrue', 'htmlHiddenWrapperNodes', 'hiddenRows'];
 
 let rowSeg = null;
+
+/*
+ * Ticket 24, and always on rather than PERF_DEEP: the whole claim of the
+ * rowdefer arm is that no row makes this test during startup, so a phase-level
+ * sweep has to be able to see the count go to zero.  A local integer bumped per
+ * row and emitted once per site, never a perfCount() inside the loop.
+ */
+let htmlHiddenTests = 0;
 
 function rowSegReset() {
     rowSeg = {};
@@ -262,6 +274,9 @@ export class Inspector {
         section.toggleClass("collapsed", collapsed);
         section.find("> .collapsible-header button:first-of-type")
             .attr("aria-expanded", String(!collapsed));
+        if (!collapsed) {
+            this.tagConcealedFacts(body);
+        }
         this.updateBulkToggleAvailability();
     }
 
@@ -432,6 +447,9 @@ export class Inspector {
             }
             this.factListRow(facts[i]).appendTo(container);
         }
+        if (!container.closest(".collapsible-section").hasClass("collapsed")) {
+            this.tagConcealedFacts(container);
+        }
         /* Only this batch's rows may read from it, or a later caller of
          * factListRow() (search results, footnotes) picks up a stale entry. */
         this._preResolvedHTMLHidden = undefined;
@@ -510,6 +528,9 @@ export class Inspector {
             }
         }
         perfCount('factList.groups', groups.length);
+        /* Ticket 24: the outline site's share of the isHTMLHidden tests, against
+         * addResults' searchList.htmlHiddenTests for the drain's share. */
+        perfCount('factList.htmlHiddenTests', htmlHiddenTests);
         perfSpan('inspector.updateBulkToggleAvailability', () => this.updateBulkToggleAvailability());
     }
 
@@ -711,6 +732,9 @@ export class Inspector {
             .addClass("selected");
         $("#ixv").removeClass("show-filters");
         $("#ixv").removeClass(allModes.filter(m => m !== mode)).addClass(mode);
+        if (mode === "search-mode") {
+            this.tagConcealedFacts($(SEARCH_RESULTS));
+        }
         if (focusInspector === true) {
             this._showFactDetails();
         }
@@ -813,6 +837,7 @@ export class Inspector {
         if (ABLATE === 'rownohide') {
             return false;
         }
+        htmlHiddenTests++;
         if (PERF_DEEP && rowSeg !== null) {
             rowSeg.htmlHiddenTested++;
             rowSeg.htmlHiddenWrapperNodes += f.ixNode?.wrapperNodes?.length ?? 0;
@@ -886,6 +911,11 @@ export class Inspector {
                 .text(i18next.t("search.hiddenFact"))
                 .appendTo(tags);
         }
+        else if (ABLATE === 'rowdefer') {
+            /* Ticket 24's arm: the test is not skipped, it is postponed to the
+             * moment this row is first shown.  See tagConcealedFacts(). */
+            row.addClass(CONCEALED_TAG_PENDING).data(CONCEALED_TAG_FACT, f);
+        }
         else {
             /* Timed on its own, inside the tags segment: this one call is the
              * only style or layout read in the whole row (ticket 06). */
@@ -915,8 +945,49 @@ export class Inspector {
         return row;
     }
 
+    /*
+     * Ticket 24's arm only.  Give every row in container that is still owed a
+     * concealed-fact tag the test it is owed.  Timed and counted because the
+     * cost the arm removes from startup has to be shown arriving somewhere:
+     * during a measured load nothing is ever shown, so every counter here
+     * should read zero on every fixture, and rowDefer.pending should hold the
+     * rows that are waiting.
+     */
+    tagConcealedFacts(container) {
+        if (ABLATE !== 'rowdefer') {
+            return;
+        }
+        const pending = $("." + CONCEALED_TAG_PENDING, container);
+        if (pending.length === 0) {
+            return;
+        }
+        const t0 = performance.now();
+        let tagged = 0;
+        pending.each((i, e) => {
+            const row = $(e).removeClass(CONCEALED_TAG_PENDING);
+            const f = row.data(CONCEALED_TAG_FACT);
+            row.removeData(CONCEALED_TAG_FACT);
+            if (this._rowHTMLHidden(f)) {
+                tagged++;
+                $('<div class="hidden"></div>')
+                    .text(i18next.t("search.concealedFact"))
+                    .appendTo(row.children(".block-list-item-tags"));
+            }
+        });
+        perfAdd('inspector.tagConcealedFacts', performance.now() - t0);
+        perfCount('rowDefer.rowsShown', pending.length);
+        perfCount('rowDefer.tagged', tagged);
+    }
+
     addResults(container, results, offset) {
         $('.more-results', container).remove();
+        /* Ticket 24 has to price the two row-building sites apart: this one
+         * builds up to SEARCH_PAGE_SIZE rows inside the post-load drain, and
+         * ticket 08 found the inspectorInit row table does not cover it.  One
+         * pair of now() calls per call, not per row, and on every arm. */
+        const t0 = performance.now();
+        const testsBefore = htmlHiddenTests;
+        let built = 0;
         for (var i = offset; i < results.length; i++ ) {
             if (i - offset >= SEARCH_PAGE_SIZE) {
                 $('<div class="more-results"></div>')
@@ -926,6 +997,13 @@ export class Inspector {
                 break;
             }
             this.factListRow(results[i].fact).appendTo(container);
+            built++;
+        }
+        perfAdd('inspector.searchResultRows', performance.now() - t0);
+        perfCount('searchList.rowsBuilt', built);
+        perfCount('searchList.htmlHiddenTests', htmlHiddenTests - testsBefore);
+        if (this._curInspectorMode === "search-mode") {
+            this.tagConcealedFacts(container);
         }
     }
 
@@ -1653,6 +1731,8 @@ export class Inspector {
                 html.append(this.factListRow(fn));
             }
         }
+        // Selection-time, into a panel about to be shown: nothing to defer to.
+        this.tagConcealedFacts(html);
         return html;
     }
 
@@ -1829,6 +1909,7 @@ export class Inspector {
         fact.linkedFacts.forEach((linkedFact) => {
             html.append(this.factListRow(linkedFact));
         });
+        this.tagConcealedFacts(html);
         return html;
     }
 

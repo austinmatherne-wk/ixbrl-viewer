@@ -65,6 +65,17 @@ export const PERF_DEEP = ON && LEVEL === 'deep';
  *                         does not, so it is the one arm above that could be
  *                         merged.  Measure this, not batched, before claiming a
  *                         payoff for the shipped change.
+ *   bomemo                ticket 11's candidate change: batchedordered, plus a
+ *                         WeakMap memo so a descendant's position is resolved
+ *                         once per document instead of once per enclosing fact.
+ *                         Nested facts scan overlapping subtrees, so the
+ *                         baseline reads 178,059 times over 143,748 distinct
+ *                         nodes on aviva-2025 and 247,548 over 73,214 on
+ *                         fr-esef-both-huge.  Against batchedordered: what the
+ *                         repeated reads cost, with the walk, the classes, the
+ *                         collection and allNodes' order all held identical.
+ *                         fcwn.styleReads is the mechanism and
+ *                         fcwn.absoluteSubNodes is the guard.
  *
  * Ticket 06's arms, on the fact-list row path rather than the document walk.
  * factListRow() calls f.isHTMLHidden() once per row, and that reads layout

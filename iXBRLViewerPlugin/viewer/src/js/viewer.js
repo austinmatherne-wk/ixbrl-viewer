@@ -24,6 +24,15 @@ function localName(e) {
 }
 
 
+/* Ticket 11's memo, and it exists only for the `bomemo` arm.  Nested facts scan
+ * overlapping subtrees, so the baseline resolves style for the same descendant
+ * once per enclosing fact: 178,059 reads over 143,748 distinct nodes on
+ * aviva-2025, 247,548 over 73,214 on fr-esef-both-huge.  A WeakMap keyed on the
+ * element holds the answer so the repeats cost a lookup instead of a forced
+ * style resolution, and holds nothing alive that the document does not. */
+const ABS_MEMO = new WeakMap();
+
+
 export class Viewer {
     constructor(iv, iframes, reportSet) {
         this._iv = iv;
@@ -486,6 +495,9 @@ export class Viewer {
         const allNodes = [];
         let scanned = 0;
         let absolute = 0;
+        /* Only the bomemo arm moves this: every other arm resolves style once
+         * per scanned descendant, so its read count is fcwn.subNodesScanned. */
+        let styleReads = 0;
         /* The ablation arm is tested once per fact, never per node, so the
          * unablated loop below stays byte-identical to master.  See ABLATE in
          * perf.js for what each arm removes; all of them CHANGE BEHAVIOUR.
@@ -495,7 +507,7 @@ export class Viewer {
          * path, and while the chain below ended in a bare `else` meaning noscan,
          * those arms silently ablated this scan as well - which took 19s off Aviva
          * and very nearly passed for a finding. */
-        if (!['noscan', 'nostyle', 'styleonly', 'batched', 'batchedordered'].includes(ABLATE)) {
+        if (!['noscan', 'nostyle', 'styleonly', 'batched', 'batchedordered', 'bomemo'].includes(ABLATE)) {
             for (const node of nodes) {
                 let hasSubNodes = false;
                 allNodes.push(node);
@@ -626,6 +638,60 @@ export class Viewer {
                 }
             }
         }
+        else if (ABLATE === 'bomemo') {
+            /* Ticket 11's candidate change: batchedordered, plus a memo so a
+             * descendant's position is resolved once per document rather than
+             * once per enclosing fact.  Everything else - the walk, the classes,
+             * the collection, allNodes' order - is batchedordered's, so a paired
+             * comparison against that arm isolates the repeated reads and
+             * nothing else.
+             *
+             * Sound for the same reason batchedordered is, plus one more:
+             * _preProcessiXBRL is depth-first, so a nested fact is scanned
+             * before its ancestor and the memo is always written before it is
+             * read.  What could still make a memoised answer stale is a WRITE
+             * between the two reads that changes the descendant's computed
+             * position - and the only writes the walk performs are the four
+             * ixbrl-* classes, none of which any rule keyed on them gives a
+             * position (viewer.less's only position:absolute is
+             * div.ixbrl-table-handle), and _wrapNode's inserted wrapper, which
+             * changes the tree a child-combinator selector could match on.
+             * That last one is a real hazard and is not argued away here:
+             * assert-wrapper-identity.js is the gate, and it sees exactly this
+             * (a differing .ixbrl-sub-element set moves both the dom and
+             * classAttr signatures). */
+            const subNodeLists = [];
+            for (const node of nodes) {
+                const absoluteSubNodes = [];
+                for (const subNode of node.querySelectorAll("*")) {
+                    scanned++;
+                    let isAbsolute = ABS_MEMO.get(subNode);
+                    if (isAbsolute === undefined) {
+                        isAbsolute = getComputedStyle(subNode).getPropertyValue('position') === "absolute";
+                        ABS_MEMO.set(subNode, isAbsolute);
+                        styleReads++;
+                    }
+                    if (isAbsolute) {
+                        absoluteSubNodes.push(subNode);
+                        absolute++;
+                    }
+                }
+                subNodeLists.push(absoluteSubNodes);
+            }
+            for (let i = 0; i < nodes.length; i++) {
+                const node = nodes[i];
+                const absoluteSubNodes = subNodeLists[i];
+                allNodes.push(node);
+                node.classList.add("ixbrl-element");
+                for (const subNode of absoluteSubNodes) {
+                    subNode.classList.add("ixbrl-sub-element");
+                    allNodes.push(subNode);
+                }
+                if (absoluteSubNodes.length > 0) {
+                    node.classList.add("ixbrl-contains-absolute");
+                }
+            }
+        }
         else if (ABLATE === 'nostyle') {
             /* Walk every descendant, resolve no style. */
             for (const node of nodes) {
@@ -651,6 +717,11 @@ export class Viewer {
              * forced style resolution a candidate cost centre in its own right. */
             perfCount('fcwn.subNodesScanned', scanned);
             perfCount('fcwn.absoluteSubNodes', absolute);
+            /* Ticket 11's mechanism counter.  Zero on every arm but bomemo, where
+             * it is the read count the memo actually achieved - so bomemo is the
+             * change it claims to be only if this lands well under
+             * fcwn.subNodesScanned while fcwn.absoluteSubNodes stays identical. */
+            perfCount('fcwn.styleReads', styleReads);
         }
         return $(allNodes);
     }

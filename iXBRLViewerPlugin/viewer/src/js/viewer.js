@@ -330,7 +330,10 @@ export class Viewer {
                  * up front, which is what lets a non-matching node skip the whole
                  * rewrite - ticket 09 §3 found that lazy allocation is the larger
                  * half of R_u, not the replaceWith. */
-                const cond = arm === 'untaggedcondrewrite';
+                /* Isolation of conditional-untagged-rewrite: lazy allocation is
+                 * the shipped default.  The untaggedcondrewrite ablation arm is
+                 * now a null vs none. */
+                const cond = true;
                 t = deep ? performance.now() : 0;
                 let output = (rewrite && !cond) ? $("<div></div>") : null;
                 if (deep) {

@@ -8,7 +8,7 @@ import { Inspector } from "./inspector.js";
 import { initializeTheme } from './theme.js';
 import { TaxonomyNamer } from './taxonomynamer.js';
 import { FEATURE_GUIDE_LINK, FEATURE_REVIEW, FEATURE_SUPPORT_LINK, FEATURE_SURVEY_LINK, USER_GUIDE_URL, moveNonAppAttributes } from "./util";
-import { ABLATE_LOAD, POLL_FAST_MS, perfAdd, perfClose, perfCount, perfLoaderRemoved, perfMark, perfOpen, perfSpan } from "./perf.js";
+import { ABLATE_LOAD, ABLATE_PROGRESS, POLL_FAST_MS, perfAdd, perfClose, perfCount, perfLoaderRemoved, perfMark, perfOpen, perfSpan } from "./perf.js";
 
 const featureFalsyValues = new Set([undefined, null, '', 'false', false]);
 
@@ -519,6 +519,20 @@ export class iXBRLViewer {
              * calls on a review-mode load.  Accumulated so the report can say how
              * much of startup is the progress mechanism itself. */
             const progressStart = performance.now();
+            /* Ticket 26's ceiling arm.  Everything the baseline does to the DOM
+             * still happens - same log line, same text write, in the same order -
+             * and only the two frames it waits for are skipped, so the delta
+             * against `none` is the waiting and nothing else.  UNSHIPPABLE: with
+             * no frame forced, the text paints only after the phase it announces
+             * has finished, which is the inversion ticket 10 rejected.  See
+             * ABLATE_PROGRESS in perf.js. */
+            if (ABLATE_PROGRESS === 'progsync') {
+                console.log(`%c [Progress] ${msg} `, 'background: #77d1c8; color: black;');
+                $('#ixv .loader .text').text(msg);
+                perfAdd('setProgress.wait', performance.now() - progressStart);
+                resolve();
+                return;
+            }
             /* We need to do a double requestAnimationFrame, as we need to get the
              * message up before the ensuing thread-blocking work
              * https://bugs.chromium.org/p/chromium/issues/detail?id=675795

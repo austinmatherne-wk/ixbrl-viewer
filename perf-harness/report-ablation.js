@@ -122,6 +122,28 @@ const METRICS = [
     ['counts.reports.factsItemsScanned', 'factsScanned', 'n'],
     ['counts.factList.rowsBuilt', 'rowsBuilt', 'n'],
     ['counts.drain.search.factCount', 'searchFacts', 'n'],
+    /* Ticket 26's arms act on setProgress's double rAF, which is not a phase at
+     * all but the gaps *between* phases - so the rows that can see it are the two
+     * inter-phase hops (toPrepare, toInspector) plus the phases either side of the
+     * one label the candidate change deletes.
+     *
+     * inspectorInit and prepare are carried for the failure mode this ticket was
+     * created to catch: a hop removed does not cancel the renderer's work, it
+     * postpones it, so the next forced frame pays for the union of what both
+     * phases dirtied.  If toPrepare falls and inspectorPre rises by the same
+     * amount, nothing has been recovered and the correct verdict is a decline.
+     * The two windows above decide that; these rows say where it went.
+     *
+     * progressWait is the mechanism, and its `n` is the hop count - the one span
+     * these arms are entitled to move.  A delta on an arm whose `n` did not fall
+     * as its definition predicts has not happened for the reason claimed. */
+    ['phase.toPrepare', 'toPrepare', 'ms'],
+    ['phase.prepare', 'prepare', 'ms'],
+    ['phase.toInspector', 'toInspector', 'ms'],
+    ['phase.inspectorPre', 'inspectorPre', 'ms'],
+    ['phase.inspectorInit', 'inspectorInit', 'ms'],
+    ['spans.setProgress.wait.ms', 'progressWait', 'ms'],
+    ['spans.setProgress.wait.n', 'progressHops', 'n'],
 ];
 
 const median = (xs) => {
@@ -160,13 +182,39 @@ function leaf(run, key) {
         'frameLag.drained': (run.windows?.toDrainedFrame === undefined
             ? undefined
             : run.windows.toDrainedFrame - run.windows.toDrained),
+        /* Ticket 26's rows.  Mark differences like the two above, and the mark
+         * names contain dots, so they cannot go through dig() either.  toPrepare's
+         * start falls back through two candidates for the same reason phases.js's
+         * does: in review mode the untagged phase sits inside the hop. */
+        'phase.toPrepare': (run.marks?.['phase.prepare.start'] === undefined
+            ? undefined
+            : run.marks['phase.prepare.start']
+                - (run.marks['phase.untagged.end'] ?? run.marks['phase.preProcess.end'])),
+        'phase.prepare': (run.marks?.['phase.prepare.end'] === undefined
+            ? undefined
+            : run.marks['phase.prepare.end'] - run.marks['phase.prepare.start']),
+        'phase.toInspector': (run.marks?.['inspector.initialize.start'] === undefined
+            ? undefined
+            : run.marks['inspector.initialize.start'] - run.marks['phase.prepare.end']),
+        'phase.inspectorPre': (run.marks?.['phase.inspectorInit.start'] === undefined
+            ? undefined
+            : run.marks['phase.inspectorInit.start'] - run.marks['inspector.initialize.start']),
+        'phase.inspectorInit': (run.marks?.['phase.inspectorInit.end'] === undefined
+            ? undefined
+            : run.marks['phase.inspectorInit.end'] - run.marks['phase.inspectorInit.start']),
     };
     if (key in flat) {
         return flat[key];
     }
     if (key.startsWith('spans.')) {
-        const name = key.slice(6).replace(/\.ms$/, '');
-        return run.spans?.[name]?.ms;
+        const rest = key.slice(6);
+        /* A span carries both accumulated time and a call count, and ticket 26
+         * needs the count: setProgress.wait's `n` is the hop count, which is what
+         * says an arm removed the hop it claims to have removed. */
+        if (rest.endsWith('.n')) {
+            return run.spans?.[rest.slice(0, -2)]?.n;
+        }
+        return run.spans?.[rest.replace(/\.ms$/, '')]?.ms;
     }
     if (key.startsWith('counts.')) {
         return run.counts?.[key.slice(7)];

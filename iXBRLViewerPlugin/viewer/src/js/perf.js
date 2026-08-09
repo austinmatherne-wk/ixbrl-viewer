@@ -287,6 +287,57 @@ export const ABLATE_LOAD = LOAD_ARMS.includes(ABLATE) ? ABLATE : 'none';
  * parser it is waiting for. */
 export const POLL_FAST_MS = 10;
 
+/*
+ * Ticket 26's arms, on setProgress's double requestAnimationFrame - the progress
+ * mechanism itself rather than any work it announces.  setProgress resolves only
+ * after two frames, so each of the four calls on a non-review load stops the
+ * startup chain until the browser has laid out and painted whatever the previous
+ * phase dirtied.  Entry #7 and entry #11 of the report have NO ablation arm: their
+ * headline numbers are a phase remainder and a phase span, both costs *attributed*
+ * to the mechanism with nothing measured about removing it.  These two arms are
+ * that missing measurement.
+ *
+ *   progsync        setProgress writes the text and resolves synchronously - no
+ *                   requestAnimationFrame at any of the five call sites.  THIS ARM
+ *                   SHIPS NOTHING.  It violates ticket 10's rule ("a label either
+ *                   forces its frame and names the phase actually running, or it
+ *                   does not exist") at every site simultaneously, so it models no
+ *                   candidate change.  Its only job is to bound the prize: against
+ *                   none it is the CEILING, the most this ticket could ever
+ *                   recover.  Quote it as a ceiling and never as a payoff - the
+ *                   map has two prior instances (tickets 07, 09) of an arm being
+ *                   mistaken for the fix it models.
+ *   prognoprepare   the candidate change, and the only shippable one: the
+ *                   `Preparing document` call at viewer.js:130 becomes
+ *                   Promise.resolve(), so that one label is not written and its
+ *                   frame is not awaited.  The other four sites keep their frames
+ *                   byte-identical to the baseline.  Against none: what deleting
+ *                   exactly one label buys.  Against progsync: how much of the
+ *                   ceiling the other four hold.
+ *
+ * Expect prognoprepare to recover materially less than the phase it removes.  Not
+ * asking for a frame skips a PAINT, never a LAYOUT, and the layout is forced
+ * moments later regardless by $(body).children(':visible') (viewer.js:83),
+ * getComputedStyle(...).display in _wrapNode, postProcess's getBoundingClientRect
+ * passes and htmlHidden() during row building.  With this hop gone the *next*
+ * forced frame (inspector.js:208) pays for the union of what both phases dirtied.
+ *
+ * setProgress.wait is the mechanism counter rather than a guard here, and it is
+ * the one span these arms are entitled to move: its `n` is the hop count, so it
+ * must read 4 on none, 4-but-near-zero-ms on progsync and 3 on prognoprepare.  A
+ * delta on an arm whose `n` did not fall as predicted has not happened for the
+ * reason this ticket claims.
+ *
+ * EVERY volume counter is a guard, without exception: neither arm changes what
+ * work is done, only when rendering is allowed to happen in between.  Any movement
+ * in counts.* means the arm is doing something other than what it claims.  Both
+ * frame-lag columns are carried too - these are scheduling changes by the map's
+ * definition, and ticket 04's scheduler.yield() had the best drainGap delta of
+ * five arms while pushing the first frame 268ms past the end of the drain.
+ */
+const PROGRESS_ARMS = ['progsync', 'prognoprepare'];
+export const ABLATE_PROGRESS = PROGRESS_ARMS.includes(ABLATE) ? ABLATE : 'none';
+
 const now = () => performance.now();
 
 /* Both post-load passes must finish before the load counts as drained. */

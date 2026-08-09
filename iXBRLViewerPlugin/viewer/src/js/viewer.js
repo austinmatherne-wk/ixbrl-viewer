@@ -8,8 +8,8 @@ import { getIXHiddenLinkStyle, runGenerator, viewerUniqueId, HIGHLIGHT_COLORS } 
 import { DocOrderIndex } from './docOrderIndex.js';
 import { MessageBox } from './messagebox.js';
 import {
-    ABLATE, ABLATE_UNTAGGED, EXPOSE, PERF_DEEP, perfAdd, perfCount, perfDeepAdd, perfDeepCount,
-    perfDeepNow, perfMark, perfMarkOnce, perfNow, perfSpan, perfWatchGenerator,
+    ABLATE, ABLATE_PROGRESS, ABLATE_UNTAGGED, EXPOSE, PERF_DEEP, perfAdd, perfCount, perfDeepAdd,
+    perfDeepCount, perfDeepNow, perfMark, perfMarkOnce, perfNow, perfSpan, perfWatchGenerator,
 } from './perf.js';
 
 export class DocumentTooLargeError extends Error {}
@@ -127,7 +127,15 @@ export class Viewer {
                             }
                         }
                     })()
-                        .then(() => viewer._iv.setProgress("Preparing document") )
+                        /* Ticket 26's candidate change, as an arm: the only label
+                         * whose forced frame costs more than the phase it
+                         * announces on every fixture (phase.prepare is 1.7-42.4ms
+                         * corpus-wide, max share 1.0%).  The promise chain is kept
+                         * intact so nothing downstream moves; only the hop goes.
+                         * See ABLATE_PROGRESS in perf.js. */
+                        .then(() => (ABLATE_PROGRESS === 'prognoprepare'
+                            ? undefined
+                            : viewer._iv.setProgress("Preparing document")))
                         .then(() => {
                             perfMark('phase.prepare.start');
                             perfSpan('viewer.setIXNodeMap', () => this._reportSet.setIXNodeMap(this._ixNodeMap));

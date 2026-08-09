@@ -178,11 +178,45 @@ export const PERF_DEEP = ON && LEVEL === 'deep';
  *                         appended and nothing is replaced.  Against
  *                         untaggedwalkonly: the matcher alone.
  *
+ * Ticket 25's arm.  None of the three above models ticket 09's change, and
+ * untaggednorewrite is the one that looks like it does and is not: it sets
+ * rewrite = false on EVERY text node, matching and non-matching alike, so it also
+ * removes the match-driven spans and produces no untagged highlighting at all.
+ * Ticket 09 §4: the payoff can only be bounded from that arm, never read off it.
+ *
+ *   untaggedcondrewrite   the shipped change.  The output div is built lazily on
+ *                         the first match, and a text node the matcher found
+ *                         nothing in is left alone - no div, no tail append, no
+ *                         replaceWith.  A zero-length text node is still rewritten
+ *                         so it is still deleted, which is what makes this arm
+ *                         output-identical rather than a behaviour change (ticket
+ *                         09 §1: jQuery replaceWith on an empty set removes the
+ *                         node).  Against none: the payoff, and the only arm whose
+ *                         delta this change may quote.
+ *
  * The guard counters, which no untagged arm has any business moving:
  * untagged.textNodes, untagged.elementNodes and untagged.textChars are identical
- * across all four arms, because the walk itself is untouched and replaceWith
- * preserves text content.  untagged.matches is identical on none and
- * untaggednorewrite and zero on the other two, by construction.
+ * across all five arms, because the walk itself is untouched and replaceWith
+ * preserves text content.  untagged.matches is identical on none,
+ * untaggednorewrite and untaggedcondrewrite and zero on the other two, by
+ * construction; untagged.wrapped and untagged.keptAsText are identical on the same
+ * three for the same reason.
+ *
+ * untagged.rewrittenNodes is the counter ticket 09 §7 asks for and it is both a
+ * guard and the finding.  It counts the text nodes the conditional rule rewrites -
+ * `matched || input.length === 0` - and it is computed the SAME way on every arm
+ * that runs the matcher, so none and untaggedcondrewrite must read identical while
+ * both read strictly less than untagged.textNodes.  It is what splits R_u, the
+ * deep segment paid on every text node, into the part this change can recover and
+ * the part it cannot: ticket 09 could only bound that split from matches/textNodes,
+ * because `matches` counts matches and not matching nodes.  It reads 0 on
+ * untaggedwalkonly and untaggednomatch, which never call the matcher.
+ *
+ * untagged.emptyTextNodes counts input.length === 0 on every arm including
+ * untaggedwalkonly.  Ticket 09 §2 argues a zero-length text node is unreachable in
+ * practice - the parser never emits one and the walk cannot create one - so this
+ * should read 0 corpus-wide.  It is measured rather than assumed because the whole
+ * identical-output claim rests on the one clause that handles it.
  *
  * Confound to report, never to hide: three of these arms leave fewer nodes in the
  * document than the baseline, so viewer.untagged.showChildren - a forced relayout
@@ -210,7 +244,8 @@ export const EXPOSE = new URLSearchParams(window.location.search).get('ixvexpose
  * evidence bar handsomely.  An arm this path does not own resolves to 'none'
  * here, so the loop below stays byte-identical to master for it.
  */
-const UNTAGGED_ARMS = ['untaggedwalkonly', 'untaggednomatch', 'untaggednorewrite'];
+const UNTAGGED_ARMS = ['untaggedwalkonly', 'untaggednomatch', 'untaggednorewrite',
+    'untaggedcondrewrite'];
 export const ABLATE_UNTAGGED = UNTAGGED_ARMS.includes(ABLATE) ? ABLATE : 'none';
 
 /*

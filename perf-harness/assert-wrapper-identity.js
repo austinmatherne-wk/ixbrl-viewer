@@ -47,6 +47,23 @@
 // nowhere, not because the tagging is right.  It can only catch a row that gains
 // or loses a tag it should not have; the unit tests are the real verification.
 //
+// REVIEW=1 loads with ?review=1 so the untagged-numbers walk runs at all, and adds
+// a fifth signature.  Ticket 09 §7: the three report signatures are built from the
+// four ixbrl-* classes and the wrapperNodes map, so nothing above captures
+// review-untagged-number/-date and NOTHING SEES TEXT-NODE STRUCTURE AT ALL.  A
+// dropped span would move `elements` and shift every later element index, so that
+// much is caught - but ticket 25's arm changes whether a text node is replaced by
+// an identical copy of itself, and no signature above can see that.
+//
+//   review    every element carrying a review-untagged class, as
+//             "<element index>:<class>", plus the full text-node shape of every
+//             report document as "<parent index>.<child position>:<nodeValue>".
+//             The second half is the one that matters: it is taken over node
+//             positions and values rather than identities, because the change
+//             under test replaces a node with an equal one and a signature over
+//             identity would report a difference that is not observable.  Deleting
+//             a text node, splitting one, or leaving a tail unappended all move it.
+//
 // Exit status is 1 if any arm's signature differs from the first arm's, so this
 // is usable as a gate rather than something to read.
 const { spawn } = require('child_process');
@@ -154,6 +171,66 @@ async function signatures() {
 }
 
 /*
+ * Runs in-page, after signatures().  The review-mode signature: the classes the
+ * untagged walk applies, and the text-node structure it rewrites.  Kept apart from
+ * signatures() so the three report signatures other tickets depend on stay exactly
+ * what they were.
+ *
+ * The element index is rebuilt here rather than shared, because this runs as its
+ * own page.evaluate and the two walks are identical: document order over the
+ * viewer document and every report iframe, same as signatures().
+ */
+async function reviewSignature() {
+    const REVIEW_CLASSES = ['review-untagged-number', 'review-untagged-date'];
+    const docs = [document, ...[...document.querySelectorAll('iframe')].map(f => f.contentDocument)];
+    const classParts = [];
+    const textParts = [];
+    let next = 0;
+    let reviewSpans = 0;
+    let textNodes = 0;
+    let textChars = 0;
+    for (const doc of docs) {
+        if (doc === null) {
+            continue;
+        }
+        const index = new Map();
+        for (const el of doc.getElementsByTagName('*')) {
+            const i = next++;
+            index.set(el, i);
+            const on = REVIEW_CLASSES.filter(c => el.classList.contains(c));
+            if (on.length) {
+                reviewSpans++;
+                classParts.push(`${i}:${on.join(',')}`);
+            }
+            /* Only the element's own text children, so a node's position is
+             * relative to a parent whose index is already in the signature.  An
+             * empty text node has no visible effect and is exactly what the change
+             * under test still deletes, so it is included verbatim. */
+            let pos = 0;
+            for (const child of el.childNodes) {
+                if (child.nodeType === 3) {
+                    textNodes++;
+                    textChars += child.nodeValue.length;
+                    textParts.push(`${i}.${pos}:${child.nodeValue}`);
+                }
+                pos++;
+            }
+        }
+    }
+    const hash = async (s) => {
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+        return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+    };
+    return {
+        reviewSpans,
+        reviewTextNodes: textNodes,
+        reviewTextChars: textChars,
+        reviewClassHash: await hash(classParts.join('|')),
+        reviewTextHash: await hash(textParts.join(' ')),
+    };
+}
+
+/*
  * Runs in-page, after signatures().  Shows everything a deferred row tag could
  * be waiting on, then signs the rows.  Clicking the real controls rather than
  * calling the inspector directly keeps this a test of what a user's two clicks
@@ -221,6 +298,9 @@ async function main() {
         const byArm = {};
         for (const armName of ARMS) {
             const params = ['ixvperf=phase', 'ixvexpose=1'];
+            if (process.env.REVIEW === '1') {
+                params.push('review=1');
+            }
             if (armName !== 'none') {
                 params.push(`ixvablate=${armName}`);
             }
@@ -230,11 +310,16 @@ async function main() {
             await page.goto(url, { waitUntil: 'load', timeout });
             await page.waitForFunction(() => window.IXVPERF?.done === true, { timeout, polling: 250 });
             byArm[armName] = await page.evaluate(signatures);
+            if (process.env.REVIEW === '1') {
+                Object.assign(byArm[armName], await page.evaluate(reviewSignature));
+            }
             if (process.env.INSPECTOR_ROWS === '1') {
                 Object.assign(byArm[armName], await page.evaluate(inspectorRowSignature));
             }
             process.stderr.write(`dom=${byArm[armName].domHash} classAttr=${byArm[armName].classAttrHash} `
                 + `wrapper=${byArm[armName].wrapperHash}`
+                + (byArm[armName].reviewTextHash
+                    ? ` review=${byArm[armName].reviewClassHash} text=${byArm[armName].reviewTextHash}` : '')
                 + (byArm[armName].rowsHash ? ` rows=${byArm[armName].rowsHash}` : '') + `\n`);
             await page.close();
         }

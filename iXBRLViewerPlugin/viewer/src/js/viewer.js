@@ -235,6 +235,7 @@ export class Viewer {
         const acc = {
             elementNodes: 0, elementsRecursed: 0, textNodes: 0, textChars: 0,
             matches: 0, keptAsText: 0, wrapped: 0,
+            rewrittenNodes: 0, emptyTextNodes: 0,
             contents: 0, elementTest: 0, match: 0, matchRewrite: 0, rewrite: 0,
         };
         this._wrapUntaggedNumbersInner(n, docIndex, ignoreFullMatch, acc);
@@ -250,6 +251,11 @@ export class Viewer {
         perfCount('untagged.matches', acc.matches);
         perfCount('untagged.keptAsText', acc.keptAsText);
         perfCount('untagged.wrapped', acc.wrapped);
+        /* Ticket 25's split of R_u, and the guard on its arm.  Computed by the
+         * same predicate on every arm that runs the matcher, so `none` and
+         * untaggedcondrewrite must agree; see ABLATE in perf.js. */
+        perfCount('untagged.rewrittenNodes', acc.rewrittenNodes);
+        perfCount('untagged.emptyTextNodes', acc.emptyTextNodes);
 
         /* The five segments, which tile the walk bar the loop's own overhead. */
         perfDeepAdd('untagged.contents', acc.contents);
@@ -312,16 +318,25 @@ export class Viewer {
                 /* Arms are named explicitly, never reached by a bare else - an
                  * arm belonging to another code path must leave this walk
                  * byte-identical to master.  See ABLATE in perf.js. */
+                if (input.length === 0) {
+                    acc.emptyTextNodes++;
+                }
                 if (arm === 'untaggedwalkonly') {
                     return;
                 }
                 const rewrite = arm !== 'untaggednorewrite';
+                /* Ticket 25's arm.  The div is built on the first match instead of
+                 * up front, which is what lets a non-matching node skip the whole
+                 * rewrite - ticket 09 §3 found that lazy allocation is the larger
+                 * half of R_u, not the replaceWith. */
+                const cond = arm === 'untaggedcondrewrite';
                 t = deep ? performance.now() : 0;
-                const output = rewrite ? $("<div></div>") : null;
+                let output = (rewrite && !cond) ? $("<div></div>") : null;
                 if (deep) {
                     acc.rewrite += performance.now() - t;
                 }
                 let pos = 0;
+                const matchesBefore = acc.matches;
                 if (arm !== 'untaggednomatch') {
                     /* The callback's own time is subtracted from the matcher's, so
                      * `match` is the regex and `matchRewrite` is the span building
@@ -331,6 +346,19 @@ export class Viewer {
                     numberMatchSearch(input, function (m, do_not_want, is_date) {
                         const tc = deep ? performance.now() : 0;
                         acc.matches++;
+                        /* Charged to `rewrite` and taken back off `cb`, so the
+                         * four-term partition means the same thing on this arm as
+                         * on the other four: the div is rewrite cost wherever it
+                         * happens to be allocated. */
+                        if (cond && output === null) {
+                            const td = deep ? performance.now() : 0;
+                            output = $("<div></div>");
+                            if (deep) {
+                                const d = performance.now() - td;
+                                acc.rewrite += d;
+                                cb -= d;
+                            }
+                        }
                         if (rewrite && m.index > pos) {
                             output.append(document.createTextNode(input.substring(pos, m.index)));
                         }
@@ -363,7 +391,26 @@ export class Viewer {
                         acc.matchRewrite += cb;
                     }
                 }
+                /* The same predicate on every arm that runs the matcher, so it is a
+                 * guard between none and untaggedcondrewrite as well as the split
+                 * of R_u that ticket 09 could only bound. */
+                if (arm !== 'untaggednomatch'
+                        && (acc.matches > matchesBefore || input.length === 0)) {
+                    acc.rewrittenNodes++;
+                }
                 if (rewrite) {
+                    if (cond && output === null) {
+                        /* Nothing matched.  The unconditional version would replace
+                         * this node with a copy of itself - observationally nothing
+                         * (ticket 09 §1, verified in jsdom).  The exception is a
+                         * zero-length node, where replaceWith() on empty content
+                         * removes it, so that one case still runs and the arm stays
+                         * output-identical rather than a behaviour change. */
+                        if (input.length > 0) {
+                            return;
+                        }
+                        output = $("<div></div>");
+                    }
                     t = deep ? performance.now() : 0;
                     if (pos < input.length) {
                         output.append(document.createTextNode(input.substring(pos, input.length)));

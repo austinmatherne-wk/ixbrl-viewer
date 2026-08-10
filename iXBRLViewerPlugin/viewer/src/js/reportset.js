@@ -22,6 +22,25 @@ export class ReportSet {
     }
 
     /*
+     * Provide a source for fact values that were not included in the taxonomy
+     * data.  The reader returns the unparsed JSON, and is not called until a
+     * fact without an inline value is asked for its value - which is what keeps
+     * those values off the startup path.  Metadata that carries every value
+     * inline never sets one, and so never reaches any of this.
+     */
+    setDeferredValueReader(reader) {
+        this._deferredValueReader = reader;
+    }
+
+    deferredValue(vuid) {
+        if (this._deferredValues === undefined) {
+            const json = this._deferredValueReader?.();
+            this._deferredValues = json ? JSON.parse(json) : {};
+        }
+        return this._deferredValues[vuid];
+    }
+
+    /*
      * Set additional information about facts obtained from parsing the iXBRL.
      */
     setIXNodeMap(ixData) {

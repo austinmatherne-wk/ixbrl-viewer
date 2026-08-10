@@ -27,6 +27,9 @@
 //                     alternating run by run.  Arms: none (unablated), noscan,
 //                     nostyle, styleonly - see ABLATE in perf.js.  Mutually
 //                     exclusive with CONTROL.
+//   PAIR_MODE=1       group fixtures by their "pair" manifest field and alternate
+//                     inline/stub order on each run.  Both forms must be present.
+//   TIMEOUT_CAP_MS=n   cap the size-derived timeout for smoke runs only.
 //   PROFILE=1         write a .cpuprofile for run 0 of each arm.
 //   FIXTURE_ROOT=dir  where the fixture dirs live.  Default <repo>/.scratch/
 //                     startup-slowness, which in a worktree is NOT the checkout
@@ -48,6 +51,8 @@ const TIERS = (process.env.TIERS || '1,4').split(',').map(Number);
 const LEVEL = process.env.LEVEL || 'phase';
 const CONTROL = process.env.CONTROL || null;
 const ABLATE_ARMS = process.env.ABLATE_ARMS ? process.env.ABLATE_ARMS.split(',') : null;
+const PAIR_MODE = process.env.PAIR_MODE === '1';
+const TIMEOUT_CAP_MS = Number(process.env.TIMEOUT_CAP_MS || 1_800_000);
 const PORT = Number(process.env.PORT || 8910);
 if (ABLATE_ARMS && CONTROL) {
     console.error('ABLATE_ARMS and CONTROL are mutually exclusive');
@@ -137,7 +142,7 @@ function serveRoot(build, all) {
  */
 function timeoutFor(fx, tier) {
     const mb = (fx.source_bytes + (fx.stub_bytes ?? 0)) / 1e6;
-    return Math.min(1_800_000, Math.round((30_000 + mb * 3_000) * tier));
+    return Math.min(TIMEOUT_CAP_MS, Math.round((30_000 + mb * 3_000) * tier));
 }
 
 /* Read once, at the end: these CDP counters are cumulative for the page's whole
@@ -277,7 +282,7 @@ async function measure(browser, armObj, fx, tier, runIndex) {
     const url = `${base}/${fx.slug}/${fx.entry}` + (params.length ? `?${params.join('&')}` : '');
     const timeout = timeoutFor(fx, tier);
 
-    const out = { slug: fx.slug, tier, arm, armLevel: armObj.level,
+    const out = { slug: fx.slug, pair: fx.pair ?? null, mode: fx.mode, tier, arm, armLevel: armObj.level,
         ablate: armObj.ablate ?? 'none', run: runIndex, url, timeout };
     await page.evaluateOnNewDocument(installExternalObserver);
     const wallStart = Date.now();
@@ -354,6 +359,76 @@ async function measure(browser, armObj, fx, tier, runIndex) {
             toLoaderRemoved: observed.external?.loaderRemoved,
             toLoaderRemovedFrame: observed.external?.loaderRemovedFrame,
         };
+    }
+
+    /* Ticket 31's packaging comparison requires more than matching row counts.
+     * Hash the canonical metadata and a normalised transformed report DOM on the
+     * first baseline run.  Reparenting an inline report deliberately drops
+     * top-level comments and whitespace-only text nodes, so those non-semantic
+     * nodes are removed from both forms before hashing.  This executes after both
+     * timing windows have closed, so serialising a 200 MB report cannot enter the
+     * measured startup. */
+    if (PAIR_MODE && runIndex === 0 && (armObj.ablate ?? 'none') === 'none') {
+        out.integrity = await page.evaluate(async () => {
+            const digest = async (text) => {
+                const bytes = new TextEncoder().encode(text);
+                const hash = await crypto.subtle.digest('SHA-256', bytes);
+                return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+            };
+            const metadata = Array.from(document.body.children)
+                .find(e => e.tagName === 'SCRIPT'
+                    && e.getAttribute('type') === 'application/x.ixbrl-viewer+json');
+            const reportDom = [];
+            for (const iframe of document.querySelectorAll('iframe')) {
+                const doc = iframe.contentDocument;
+                const root = doc.documentElement.cloneNode(true);
+                /* _reparentDocument seeds its iframe with an empty <title> before
+                 * moving the report's real head children.  A directly-loaded stub
+                 * report has no such viewer-created placeholder. */
+                for (const title of root.querySelectorAll('head > title')) {
+                    if (title.attributes.length === 0 && title.textContent === '') {
+                        title.remove();
+                    }
+                }
+                const walker = doc.createTreeWalker(
+                    root,
+                    NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_TEXT,
+                );
+                const remove = [];
+                while (walker.nextNode()) {
+                    if (walker.currentNode.nodeType === Node.COMMENT_NODE
+                            || walker.currentNode.nodeValue.trim() === '') {
+                        remove.push(walker.currentNode);
+                    }
+                }
+                remove.forEach(node => node.remove());
+                /* Reparenting copies html/body attributes onto newly-created
+                 * elements, so attribute insertion order differs even when names
+                 * and values do not.  Canonicalise that serialization detail,
+                 * including class-token order, over the whole report. */
+                for (const element of [root, ...root.getElementsByTagName('*')]) {
+                    const attrs = Array.from(element.attributes)
+                        .map(attr => [
+                            attr.name,
+                            attr.name === 'class'
+                                ? attr.value.split(/\s+/).filter(Boolean).sort().join(' ')
+                                : attr.value,
+                        ])
+                        .sort(([a], [b]) => a.localeCompare(b));
+                    for (const attr of Array.from(element.attributes)) {
+                        element.removeAttribute(attr.name);
+                    }
+                    for (const [name, value] of attrs) {
+                        element.setAttribute(name, value);
+                    }
+                }
+                reportDom.push(await digest(root.outerHTML));
+            }
+            return {
+                metadata: metadata ? await digest(metadata.innerHTML) : null,
+                reportDom,
+            };
+        });
     }
 
     /* Metrics again at the end.  On the control arm this is the same point as
@@ -446,6 +521,28 @@ async function main() {
         console.error(`no fixtures with fixture.json under ${FIXTURE_ROOT}`);
         process.exit(1);
     }
+    let fixtureGroups = all.map(fx => ({ name: fx.slug, fixtures: [fx] }));
+    if (PAIR_MODE) {
+        const grouped = {};
+        for (const fx of all) {
+            if (!fx.pair || !['inline', 'stub'].includes(fx.mode)) {
+                console.error(`${fx.slug}: PAIR_MODE requires pair and inline/stub mode fields`);
+                process.exit(1);
+            }
+            (grouped[fx.pair] ??= []).push(fx);
+        }
+        fixtureGroups = Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b))
+            .map(([name, fixtures]) => {
+                fixtures.sort((a, b) => ['inline', 'stub'].indexOf(a.mode)
+                    - ['inline', 'stub'].indexOf(b.mode));
+                if (fixtures.length !== 2 || fixtures[0].mode !== 'inline'
+                        || fixtures[1].mode !== 'stub') {
+                    console.error(`${name}: PAIR_MODE requires exactly one inline and one stub fixture`);
+                    process.exit(1);
+                }
+                return { name, fixtures };
+            });
+    }
 
     /* hasPerf: the build carries perf.js, so ?ixvperf= means something to it.
      * level:   what to ask that build for.
@@ -506,6 +603,7 @@ async function main() {
         runs: RUNS,
         tiers: TIERS,
         level: LEVEL,
+        pairMode: PAIR_MODE,
         review: process.env.REVIEW === '1',
         fixtureRoot: FIXTURE_ROOT,
         machine: { platform: os.platform(), arch: os.arch(), cpus: os.cpus().length,
@@ -523,48 +621,63 @@ async function main() {
     };
     write();
 
-    for (const fx of all) {
+    for (const group of fixtureGroups) {
         for (const tier of TIERS) {
             const byArm = {};
-            for (const arm of arms) {
-                byArm[arm.name] = [];
+            for (const fx of group.fixtures) {
+                byArm[fx.slug] = {};
+                for (const arm of arms) {
+                    byArm[fx.slug][arm.name] = [];
+                }
             }
-            /* Runs alternate between arms so that a machine that drifts mid-session
-             * drifts both arms equally.  Ticket 01 found this machine 2% off its
-             * own numbers from a day earlier, which is enough to fake a delta. */
+            /* A pair's two formats stay adjacent and reverse AB/BA on each run.
+             * Every configuration therefore sees the same drift in both formats,
+             * rather than finishing all inline runs before beginning stub. */
             for (let i = 0; i < RUNS; i++) {
                 for (const arm of arms) {
-                    process.stderr.write(`${fx.slug} ${tier}x ${arm.name} run ${i} ... `);
-                    try {
-                        const r = await measure(browser, arm, fx, tier, i);
-                        byArm[arm.name].push(r);
-                        process.stderr.write(
-                            `${r.timedOut ? 'TIMEOUT ' : ''}loaderRemoved=${r1(r.windows.toLoaderRemoved)}ms `
-                            + `drained=${r1(r.windows.toDrained)}ms\n`);
-                    }
-                    catch (e) {
-                        process.stderr.write(`FAILED: ${e.message}\n`);
-                        byArm[arm.name].push({ slug: fx.slug, tier, arm: arm.name, run: i, error: String(e.message) });
+                    const ordered = i % 2 ? [...group.fixtures].reverse() : group.fixtures;
+                    for (const fx of ordered) {
+                        process.stderr.write(`${fx.slug} ${tier}x ${arm.name} run ${i} ... `);
+                        try {
+                            const r = await measure(browser, arm, fx, tier, i);
+                            byArm[fx.slug][arm.name].push(r);
+                            process.stderr.write(
+                                `${r.timedOut ? 'TIMEOUT ' : ''}loaderRemoved=${r1(r.windows.toLoaderRemoved)}ms `
+                                + `drained=${r1(r.windows.toDrained)}ms\n`);
+                        }
+                        catch (e) {
+                            process.stderr.write(`FAILED: ${e.message}\n`);
+                            byArm[fx.slug][arm.name].push({
+                                slug: fx.slug, pair: fx.pair ?? null, mode: fx.mode,
+                                tier, arm: arm.name, run: i, error: String(e.message),
+                            });
+                        }
                     }
                 }
             }
-            for (const arm of arms) {
-                const runs = byArm[arm.name].filter(r => !r.error);
-                result.results.push({
-                    slug: fx.slug,
-                    tier,
-                    arm: arm.name,
-                    armLevel: arm.level,
-                    ablate: arm.ablate ?? 'none',
-                    fixture: { mode: fx.mode, entry: fx.entry, source_bytes: fx.source_bytes,
-                        stub_bytes: fx.stub_bytes ?? null, docs: fx.sources?.length ?? null },
-                    ok: runs.length,
-                    failed: byArm[arm.name].length - runs.length,
-                    timedOut: runs.filter(r => r.timedOut).length,
-                    summary: aggregate(runs),
-                    runs: byArm[arm.name],
-                });
-                write();
+            for (const fx of group.fixtures) {
+                for (const arm of arms) {
+                    const armRuns = byArm[fx.slug][arm.name];
+                    const runs = armRuns.filter(r => !r.error);
+                    result.results.push({
+                        slug: fx.slug,
+                        pair: fx.pair ?? null,
+                        tier,
+                        arm: arm.name,
+                        armLevel: arm.level,
+                        ablate: arm.ablate ?? 'none',
+                        fixture: { pair: fx.pair ?? null, mode: fx.mode, entry: fx.entry,
+                            source_bytes: fx.source_bytes, stub_bytes: fx.stub_bytes ?? null,
+                            docs: fx.sources?.length ?? null, metadata_sha256: fx.metadata_sha256 ?? null,
+                            report_sha256: fx.report_sha256 ?? null },
+                        ok: runs.length,
+                        failed: armRuns.length - runs.length,
+                        timedOut: runs.filter(r => r.timedOut).length,
+                        summary: aggregate(runs),
+                        runs: armRuns,
+                    });
+                    write();
+                }
             }
         }
     }

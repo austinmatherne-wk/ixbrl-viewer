@@ -42,10 +42,24 @@ With no fixture arguments every directory under `FIXTURE_ROOT` holding a
 | `REVIEW` | — | `1` loads with `?review=1`, so the untagged-numbers phase runs. |
 | `CONTROL` | — | path to a second checkout with a built `dist/`, measured as a paired arm on `PORT+1`. |
 | `CONTROL_INSTRUMENTED` | — | `1` if the control build also has `perf.js`. |
+| `PAIR_MODE` | — | `1` groups fixtures by their manifest's `pair` field and alternates the inline/stub order AB/BA. |
+| `TIMEOUT_CAP_MS` | `1800000` | Cap the size-derived timeout for smoke runs; do not use for production sweeps. |
 | `PROFILE` | — | `1` writes a `.cpuprofile` for run 0 of each arm. |
 | `PORT` | `8910` | first port; loopback only, deliberately. |
 | `OUT` | `perf-harness/out/phases-<stamp>.json` | machine-readable output. |
 | `HEADFUL` | — | `1` for a visible browser. Debugging only; it changes the timings. |
+
+## Paired fixture formats
+
+Ticket 31 adds a second pairing axis. With `PAIR_MODE=1`, every fixture must
+declare a `pair` and a `mode` (`inline` or `stub`). The harness keeps both forms
+adjacent and reverses their order on alternating runs. Build/query-string arms
+remain the outer axis, so each configuration gets an independent same-session
+inline-minus-stub comparison.
+
+The first unablated run also hashes the exact metadata script and each fully
+transformed report document after the measured windows close. This is a
+correctness assertion for packaging comparisons, not a timed operation.
 
 ## Levels
 

@@ -252,8 +252,12 @@ to the iXBRL report file (or to the first file, in the case of a document set).
 
 Stub viewer mode is an optional generation mode that creates an additional,
 minimal HTML file containing the JSON data block, and the link to the
-JavaScript viewer.  This mode has two advantages over the default approach of
-embedding the JSON data and JavaScript link in the iXBRL report:
+JavaScript viewer.  It is recommended for medium and large reports when
+startup performance matters; measurements show that the performance benefit
+generally increases with report size.
+
+This mode has two advantages over the default approach of embedding the JSON
+data and JavaScript link in the iXBRL report:
 
 1. Provided that all facts and footnotes in the iXBRL report already have ID
    attributes, no modification of the iXBRL report is required.

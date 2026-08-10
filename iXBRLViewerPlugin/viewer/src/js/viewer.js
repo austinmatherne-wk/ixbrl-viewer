@@ -794,9 +794,10 @@ export class Viewer {
         const nextContinuationMap = {};
         // map of items in default target document to all their continuations
         const itemContinuationMap = {};
-        /* Ticket 14's 2x2 separates selector breadth from jQuery iteration.  The
-         * none path deliberately retains master's chained find().each() shape;
-         * deep spans time whole collections, never individual elements. */
+        /* Ticket 14's 2x2 separates selector breadth from jQuery iteration.
+         * Isolation of native-continuation-map makes the shipped default the
+         * native `body [id]` walk (the old `contid` arm).  `contidjq` and
+         * `contplain` remain as residual probes; `contid` is now a null vs none. */
         let walked = 0;
         let eligible = 0;
         this._iframes.each((n, iframe) => {
@@ -806,36 +807,17 @@ export class Viewer {
             if (ABLATE_CONTINUATION === 'contidjq') {
                 nodes = $(iframe).contents().find("body [id]");
             }
-            else if (ABLATE_CONTINUATION === 'contid') {
-                nodes = iframe.contentDocument.querySelectorAll("body [id]");
-            }
             else if (ABLATE_CONTINUATION === 'contplain') {
                 nodes = iframe.contentDocument.querySelectorAll("body *");
             }
             else {
-                nodes = $(iframe).contents().find("body *");
+                nodes = iframe.contentDocument.querySelectorAll("body [id]");
             }
             perfDeepAdd('continuationMaps.select', perfDeepNow() - selectStart);
             walked += nodes.length;
 
             const iterateStart = perfDeepNow();
-            if (ABLATE_CONTINUATION === 'contplain' || ABLATE_CONTINUATION === 'contid') {
-                for (const node of nodes) {
-                    const name = localName(node.nodeName).toUpperCase();
-                    if (['NONNUMERIC', 'NONFRACTION', 'FOOTNOTE', 'CONTINUATION'].includes(name) && node.hasAttribute('id')) {
-                        eligible++;
-                        const nodeId = viewerUniqueId(reportIndex, node.getAttribute('id'));
-                        const continuedAtId = viewerUniqueId(reportIndex, node.getAttribute("continuedAt"));
-                        if (continuedAtId !== null) {
-                            nextContinuationMap[nodeId] = continuedAtId;
-                        }
-                        if (name != 'CONTINUATION') {
-                            itemContinuationMap[nodeId] = [];
-                        }
-                    }
-                }
-            }
-            else {
+            if (ABLATE_CONTINUATION === 'contidjq') {
                 nodes.each((m, node) => {
                     const name = localName(node.nodeName).toUpperCase();
                     if (['NONNUMERIC', 'NONFRACTION', 'FOOTNOTE', 'CONTINUATION'].includes(name) && node.hasAttribute('id')) {
@@ -850,6 +832,22 @@ export class Viewer {
                         }
                     }
                 });
+            }
+            else {
+                for (const node of nodes) {
+                    const name = localName(node.nodeName).toUpperCase();
+                    if (['NONNUMERIC', 'NONFRACTION', 'FOOTNOTE', 'CONTINUATION'].includes(name) && node.hasAttribute('id')) {
+                        eligible++;
+                        const nodeId = viewerUniqueId(reportIndex, node.getAttribute('id'));
+                        const continuedAtId = viewerUniqueId(reportIndex, node.getAttribute("continuedAt"));
+                        if (continuedAtId !== null) {
+                            nextContinuationMap[nodeId] = continuedAtId;
+                        }
+                        if (name != 'CONTINUATION') {
+                            itemContinuationMap[nodeId] = [];
+                        }
+                    }
+                }
             }
             perfDeepAdd('continuationMaps.iterate', perfDeepNow() - iterateStart);
         });

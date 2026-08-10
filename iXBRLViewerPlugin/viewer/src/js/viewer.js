@@ -334,7 +334,8 @@ export class Viewer {
         const itemContinuationMap = {};
         this._iframes.each((n, iframe) => {
             const reportIndex = $(iframe).data("report-index");
-            $(iframe).contents().find("body *").each((m, node) => {
+            const nodes = iframe.contentDocument.querySelectorAll("body [id]");
+            for (const node of nodes) {
                 const name = localName(node.nodeName).toUpperCase();
                 if (['NONNUMERIC', 'NONFRACTION', 'FOOTNOTE', 'CONTINUATION'].includes(name) && node.hasAttribute('id')) {
                     const nodeId = viewerUniqueId(reportIndex, node.getAttribute('id'));
@@ -346,7 +347,7 @@ export class Viewer {
                         itemContinuationMap[nodeId] = [];
                     }
                 }
-            });
+            }
         });
 
         // Map of continuation IDs to list of (default target doc) items that

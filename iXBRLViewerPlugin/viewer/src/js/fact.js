@@ -77,6 +77,13 @@ export class Fact {
     }
 
     value() {
+        /* A missing value means the generator put it in a second script tag
+         * rather than in the taxonomy data; a nil value is null and stays
+         * inline, so undefined is unambiguous.  Metadata that carries every
+         * value inline never takes the second branch. */
+        if (this.f.v === undefined) {
+            return this.report.reportSet.deferredValue(this.vuid);
+        }
         return this.f.v;
     }
 
@@ -85,7 +92,7 @@ export class Fact {
     }
 
     readableValueHTML(val) {
-        let v = val === undefined ? this.f.v : val;
+        let v = val === undefined ? this.value() : val;
         const span = document.createElement("span");
         span.classList.add("fact-value");
         if (this.isInvalidIXValue()) {

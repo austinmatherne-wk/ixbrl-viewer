@@ -994,3 +994,138 @@ class TestIXBRLViewer:
             assert body[2].prefix is None
             assert body[2].attrib.get('type') == 'application/x.ixbrl-viewer+json'
             assert body[3].text == 'END IXBRL VIEWER EXTENSIONS'
+
+
+EMPTY_DOCUMENT = rb'''
+    <html xmlns="http://www.w3.org/1999/xhtml">
+        <body>
+        </body>
+    </html>
+'''
+
+# Contains every character escapeJSONForScriptTag rewrites, so that a round trip
+# through the sidecar exercises the escaping rather than only the copy.
+TEXT_BLOCK_VALUE = '<p>Assets &amp; liabilities <b>rose</b></p>'
+
+
+class TestTextBlockValues:
+    """
+    Text block values are escaped copies of report content, and on the filings
+    that have them they are nearly the whole viewer payload.  The generator
+    emits them into a second script tag so that the startup path's JSON.parse
+    never sees them.
+    """
+
+    def targetReport(self, facts):
+        return {
+            "concepts": {
+                "eg:TextBlock": {"t": True},
+                "eg:Plain": {},
+            },
+            "facts": facts,
+        }
+
+    def builderWithSourceReports(self, *sourceReports):
+        builder = IXBRLViewerBuilder(Mock())
+        builder.taxonomyData["sourceReports"] = [
+            {"targetReports": list(targetReports)} for targetReports in sourceReports
+        ]
+        return builder
+
+    def test_only_non_nil_text_block_strings_are_moved(self):
+        builder = self.builderWithSourceReports([self.targetReport({
+            "tb": {"a": {"c": "eg:TextBlock"}, "v": TEXT_BLOCK_VALUE},
+            "plain": {"a": {"c": "eg:Plain"}, "v": "a plain string"},
+            "nilTb": {"a": {"c": "eg:TextBlock"}, "v": None},
+        })])
+
+        values = builder.extractTextBlockValues()
+
+        assert values == {"0-tb": TEXT_BLOCK_VALUE}
+        facts = builder.taxonomyData["sourceReports"][0]["targetReports"][0]["facts"]
+        assert "v" not in facts["tb"]
+        assert facts["plain"]["v"] == "a plain string"
+        # isNil() in the viewer reads `v === null` during startup, so a nil fact
+        # that lost its inline value would silently stop reading as nil.
+        assert facts["nilTb"]["v"] is None
+
+    def test_values_are_keyed_by_source_report_index(self):
+        builder = self.builderWithSourceReports(
+            [self.targetReport({"tb": {"a": {"c": "eg:TextBlock"}, "v": "first"}})],
+            [self.targetReport({"tb": {"a": {"c": "eg:TextBlock"}, "v": "second"}})],
+        )
+
+        # Fact IDs are only unique within a source report, so a document set can
+        # carry the same ID twice.
+        assert builder.extractTextBlockValues() == {"0-tb": "first", "1-tb": "second"}
+
+    def test_concepts_are_read_from_the_report_that_holds_the_fact(self):
+        untypedReport = {
+            "concepts": {"eg:TextBlock": {}},
+            "facts": {"tb": {"a": {"c": "eg:TextBlock"}, "v": "not a text block here"}},
+        }
+        builder = self.builderWithSourceReports(
+            [self.targetReport({"tb": {"a": {"c": "eg:TextBlock"}, "v": "a text block"}})],
+            [untypedReport],
+        )
+
+        assert builder.extractTextBlockValues() == {"0-tb": "a text block"}
+
+    def test_nothing_is_moved_when_no_concept_is_a_text_block(self):
+        builder = self.builderWithSourceReports([self.targetReport({
+            "plain": {"a": {"c": "eg:Plain"}, "v": "a plain string"},
+        })])
+
+        assert builder.extractTextBlockValues() == {}
+
+    def viewerFileFor(self, builder):
+        viewerFile = iXBRLViewerFile("test.xhtml", etree.parse(io.BytesIO(EMPTY_DOCUMENT)))
+        assert builder.addViewerData(viewerFile, 'ixbrlviewer.js')
+        return viewerFile.xmlDocument.getroot()[0]
+
+    def test_addViewerData_emits_the_values_in_a_second_script_tag(self):
+        builder = self.builderWithSourceReports([self.targetReport({
+            "tb": {"a": {"c": "eg:TextBlock"}, "v": TEXT_BLOCK_VALUE},
+        })])
+
+        body = self.viewerFileFor(builder)
+
+        assert len(body) == 5
+        assert body[2].attrib.get('type') == 'application/x.ixbrl-viewer+json'
+        assert body[3].tag == '{http://www.w3.org/1999/xhtml}script'
+        assert body[3].prefix is None
+        assert body[3].attrib.get('type') == 'application/x.ixbrl-viewer-textblocks+json'
+        assert body[4].text == 'END IXBRL VIEWER EXTENSIONS'
+
+        # The value survives the round trip exactly: the text block viewer is
+        # handed the generator's own bytes, so there is nothing to reconstruct.
+        assert json.loads(body[3].text) == {"0-tb": TEXT_BLOCK_VALUE}
+
+        taxonomyData = json.loads(body[2].text)
+        assert taxonomyData["textBlockValues"] == 'application/x.ixbrl-viewer-textblocks+json'
+        assert "v" not in taxonomyData["sourceReports"][0]["targetReports"][0]["facts"]["tb"]
+
+    def test_addViewerData_escapes_the_sidecar_as_it_escapes_the_payload(self):
+        builder = self.builderWithSourceReports([self.targetReport({
+            "tb": {"a": {"c": "eg:TextBlock"}, "v": TEXT_BLOCK_VALUE},
+        })])
+
+        body = self.viewerFileFor(builder)
+
+        # The document has to stay valid XML while browsers read it as HTML, so
+        # the XML special characters are JSON string escapes and not markup.
+        assert '<' not in body[3].text
+        assert '>' not in body[3].text
+        assert '&' not in body[3].text
+        assert '\\u003C' in body[3].text
+
+    def test_addViewerData_omits_the_second_tag_when_there_is_nothing_to_defer(self):
+        builder = self.builderWithSourceReports([self.targetReport({
+            "plain": {"a": {"c": "eg:Plain"}, "v": "a plain string"},
+        })])
+
+        body = self.viewerFileFor(builder)
+
+        assert len(body) == 4
+        assert body[3].text == 'END IXBRL VIEWER EXTENSIONS'
+        assert "textBlockValues" not in json.loads(body[2].text)

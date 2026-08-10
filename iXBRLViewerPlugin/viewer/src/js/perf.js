@@ -533,13 +533,12 @@ const CONTINUATION_ARMS = ['contplain', 'contidjq', 'contid'];
 export const ABLATE_CONTINUATION = CONTINUATION_ARMS.includes(ABLATE) ? ABLATE : 'none';
 
 /*
- * Ticket 08's rider, carried by rowdefer only.  Resolved once at module load so
- * that the `none` arm's htmlHidden() is the same statement master runs, rather
- * than master's statement with a branch in front of it.
+ * Ticket 08's rider, now the shipped default on this isolation (and on the
+ * stack once htmlHidden is cherry-picked).  The rowdefer arm used to be the
+ * only place this selector ran; both arms now agree, so that ablation no
+ * longer moves htmlHidden().
  */
-export const HTML_HIDDEN_FILTER = ABLATE === 'rowdefer'
-    ? ':not(.ixbrl-contains-absolute)'
-    : ':not(.ixbrl-no-highlight)';
+export const HTML_HIDDEN_FILTER = ':not(.ixbrl-contains-absolute)';
 
 const now = () => performance.now();
 

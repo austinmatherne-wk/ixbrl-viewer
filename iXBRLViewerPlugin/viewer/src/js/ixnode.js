@@ -46,6 +46,21 @@ export class IXNode {
             .join(" ");
     }
 
+    /*
+     * True if the filer has concealed this fact's tagged text with CSS: a
+     * wrapper with no box, or text that is effectively transparent.
+     *
+     * A wrapper whose only content is absolutely positioned is excluded from
+     * the ':hidden' test.  Its own box is empty by construction - the content
+     * sits in the .ixbrl-sub-element children, which are tested in its place -
+     * so its invisibility says nothing about the filer's intent.
+     * .ixbrl-contains-absolute marks exactly that case and is set during the
+     * eager wrapper walk, so it is available whenever this is called;
+     * .ixbrl-no-highlight, which was tested here before, is written only by
+     * postProcess() and only where the wrapper is not display:inline, so it was
+     * absent from every row built at startup and never reached an inline
+     * wrapper at all.
+     */
     htmlHidden() {
         return this.wrapperNodes.filter(HTML_HIDDEN_FILTER).is(':hidden') || this.wrapperNodes.is((i,e) => isTransparent($(e).css('color')));
     }

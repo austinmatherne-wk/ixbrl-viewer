@@ -2,6 +2,7 @@ import fs from 'fs';
 import puppeteer from 'puppeteer-core';
 import { DocFrame } from './page_objects/doc_frame.js';
 import { FactDetailsPanel } from './page_objects/fact_details_panel.js';
+import { FactList } from './page_objects/fact_list.js';
 import { PuppeteerScreenRecorder } from 'puppeteer-screen-recorder';
 import { Search } from './page_objects/search_panel.js';
 import { SectionList } from './page_objects/section_list.js';
@@ -13,6 +14,7 @@ export class ViewerPage {
     page;
     docFrame;
     factDetailsPanel;
+    factList;
     search;
     sectionList;
     textBlockDialog;
@@ -37,6 +39,7 @@ export class ViewerPage {
         this.page = await this.browser.newPage();
         this.docFrame = new DocFrame(this);
         this.factDetailsPanel = new FactDetailsPanel(this);
+        this.factList = new FactList(this);
         this.search = new Search(this);
         this.sectionList = new SectionList(this);
         this.textBlockDialog = new TextBlockDialog(this);
@@ -66,12 +69,32 @@ export class ViewerPage {
     // always the name of a test filing: a filing can be generated into more
     // than one viewer.
     async navigateToGeneratedViewer(viewerName, args = '') {
-        const url = `http://localhost:8080/tests/puppeteer/artifacts/generated_output/${viewerName}.htm${args}`;
+        const url = this.#viewerUrl(viewerName, args);
         this.log(`Navigating to ${url}`);
         await this.page.goto(url, { waitUntil: 'networkidle0' });
+        await this.waitForLoaderRemoved();
+    }
+
+    /*
+     * Starts a navigation and resolves as soon as the document has been parsed,
+     * before the viewer has finished loading.  Use this, followed by
+     * waitForLoaderRemoved(), when a test needs to observe the viewer part way
+     * through startup.
+     */
+    async beginNavigateToViewer(filingZipName, args = '') {
+        const url = this.#viewerUrl(filingZipName.replace('.zip', ''), args);
+        this.log(`Navigating to ${url}`);
+        await this.page.goto(url, { waitUntil: 'domcontentloaded' });
+    }
+
+    async waitForLoaderRemoved() {
         await this.page.waitForSelector(
             'xpath/' + '//*[contains(@class, "loading")]',
             { visible: false, hidden: true });
+    }
+
+    #viewerUrl(viewerName, args) {
+        return `http://localhost:8080/tests/puppeteer/artifacts/generated_output/${viewerName}.htm${args}`;
     }
 
     async tearDown() {

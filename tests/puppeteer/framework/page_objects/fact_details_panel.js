@@ -1,4 +1,4 @@
-import { Button, Text } from '../core_elements.js';
+import { Button, Element, Text } from '../core_elements.js';
 import { getTextContent } from '../utils.js';
 
 export class FactDetailsPanel {
@@ -11,6 +11,10 @@ export class FactDetailsPanel {
                 this.#viewerPage,
                 '//*[@data-i18n="factDetails.accuracy"]//ancestor::tr//td',
                 'Fact Accuracy');
+        this.concealedFactTag = new Element(
+                this.#viewerPage,
+                '//*[contains(@class,"html-hidden-fact-tag")]',
+                'Concealed Fact Tag');
         this.concept = new Text(
                 this.#viewerPage,
                 '//*[contains(@class, "fact-inspector")]//*[contains(@class,"concept-name-title")]',

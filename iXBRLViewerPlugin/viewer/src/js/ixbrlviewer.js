@@ -12,6 +12,8 @@ import { ABLATE_PROGRESS, perfAdd, perfClose, perfCount, perfLoaderRemoved, perf
 
 const featureFalsyValues = new Set([undefined, null, '', 'false', false]);
 
+const VIEWER_DATA_SCRIPT_TYPE = 'application/x.ixbrl-viewer+json';
+
 export class iXBRLViewer {
 
     constructor(options) {
@@ -307,9 +309,13 @@ export class iXBRLViewer {
     }
 
     _getTaxonomyData() {
+        return this._getScriptData(VIEWER_DATA_SCRIPT_TYPE);
+    }
+
+    _getScriptData(type) {
         for (let i = document.body.children.length - 1; i >= 0; i--) {
             const elt = document.body.children[i];
-            if (elt.tagName.toUpperCase() === 'SCRIPT' && elt.getAttribute("type") === 'application/x.ixbrl-viewer+json') {
+            if (elt.tagName.toUpperCase() === 'SCRIPT' && elt.getAttribute("type") === type) {
                 return elt.innerHTML;
             }
         }
@@ -401,6 +407,14 @@ export class iXBRLViewer {
             iv.setFeatures(features, window.location.search);
 
             const reportSet = perfSpan('reportSet.construct', () => new ReportSet(parsedTaxonomyData));
+            /* Newer metadata keeps text block values in a second script tag that
+             * the parse above never sees.  The reader is a callback rather than
+             * the string itself so that the tag is not even read until a fact
+             * value is asked for. */
+            if (parsedTaxonomyData?.textBlockValues) {
+                reportSet.setDeferredValueReader(
+                    () => iv._getScriptData(parsedTaxonomyData.textBlockValues));
+            }
             reportSet.taxonomyNamer = new TaxonomyNamer(new Map(Object.entries(this.runtimeConfig.taxonomyNames ?? {})));
 
             // Viewer disabled in stub viewer mode => redirect to first iXBRL document

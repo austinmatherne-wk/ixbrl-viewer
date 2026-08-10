@@ -50,6 +50,9 @@ LINK_QNAME_TO_LOCAL_DOCUMENTS_LINKBASE_TYPE = {
 
 WIDER_NARROWER_ARCROLE = 'http://www.esma.europa.eu/xbrl/esef/arcrole/wider-narrower'
 
+VIEWER_DATA_SCRIPT_TYPE = 'application/x.ixbrl-viewer+json'
+TEXT_BLOCK_VALUES_SCRIPT_TYPE = 'application/x.ixbrl-viewer-textblocks+json'
+
 
 def isInlineDoc(doc: ModelDocument | None) -> bool:
     return doc is not None and doc.type in {Type.INLINEXBRL, Type.INLINEXBRLDOCUMENTSET}
@@ -482,13 +485,55 @@ class IXBRLViewerBuilder:
                 return f"{numeratorsString}/{denominatorsString}"
         return numeratorsString
 
+    def extractTextBlockValues(self) -> dict[str, str]:
+        """
+        Move text block fact values out of the taxonomy data and return them,
+        keyed by the same ID the viewer builds for a fact.
+
+        Text block values are escaped copies of report content, and on filings
+        that have them they are almost the whole payload - 95.6%, 97.5% and
+        96.6% of three ESEF filings measured.  Nothing reads them while the
+        viewer starts up, so carrying them in the taxonomy data means the
+        startup path's JSON.parse pays for the whole of a report's prose to
+        show a fact list that never mentions it.  Emitted separately, they cost
+        the startup path nothing and are parsed if and when something asks for
+        one.
+
+        Only non-nil string values move.  isNil() in the viewer is `v === null`
+        and is read during startup, so a nil fact whose `v` had been moved out
+        would silently stop reading as nil.
+
+        The key is viewerUniqueId()'s format from util.js - the source report's
+        index, a hyphen, then the fact's ID - because that is what identifies a
+        fact once documents in a set can each carry their own IDs.
+        """
+        values: dict[str, str] = {}
+        for sourceReportIndex, sourceReport in enumerate(self.taxonomyData.get("sourceReports", [])):
+            for targetReport in sourceReport.get("targetReports", []):
+                textBlockConcepts = {
+                    name for name, concept in targetReport.get("concepts", {}).items()
+                    if concept.get("t")
+                }
+                for factId, factData in targetReport.get("facts", {}).items():
+                    if factData.get("a", {}).get("c") not in textBlockConcepts:
+                        continue
+                    if not isinstance(factData.get("v"), str):
+                        continue
+                    values[f"{sourceReportIndex}-{factId}"] = factData.pop("v")
+        return values
+
     def addViewerData(self, viewerFile: 'iXBRLViewerFile', scriptUrl: str) -> bool:
+        textBlockValues = self.extractTextBlockValues()
+        if textBlockValues:
+            # Recorded so that a reader of the metadata can find the second
+            # script tag without knowing to look for it.
+            self.taxonomyData["textBlockValues"] = TEXT_BLOCK_VALUES_SCRIPT_TYPE
         taxonomyDataJSON = self.escapeJSONForScriptTag(json.dumps(self.taxonomyData, indent=1, allow_nan=False))
 
         for child in viewerFile.xmlDocument.getroot():
             if child.tag == '{http://www.w3.org/1999/xhtml}body':
                 for body_child in child:
-                    if body_child.tag == '{http://www.w3.org/1999/xhtml}script' and body_child.get('type', '') == 'application/x.ixbrl-viewer+json':
+                    if body_child.tag == '{http://www.w3.org/1999/xhtml}script' and body_child.get('type', '') == VIEWER_DATA_SCRIPT_TYPE:
                         self.cntlr.addToLog("File already contains iXBRL viewer", messageCode="error")
                         return False
 
@@ -507,8 +552,14 @@ class IXBRLViewerBuilder:
                 # Putting this in the header can interfere with character set
                 # auto detection due to its length
                 e = etree.SubElement(child, "{http://www.w3.org/1999/xhtml}script", nsmap = nsmap)
-                e.set("type", "application/x.ixbrl-viewer+json")
+                e.set("type", VIEWER_DATA_SCRIPT_TYPE)
                 e.text = taxonomyDataJSON
+
+                if textBlockValues:
+                    e = etree.SubElement(child, "{http://www.w3.org/1999/xhtml}script", nsmap = nsmap)
+                    e.set("type", TEXT_BLOCK_VALUES_SCRIPT_TYPE)
+                    e.text = self.escapeJSONForScriptTag(json.dumps(textBlockValues, indent=1, allow_nan=False))
+
                 child.append(etree.Comment("END IXBRL VIEWER EXTENSIONS"))
                 return True
         return False

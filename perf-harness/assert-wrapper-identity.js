@@ -28,6 +28,11 @@
 //             an element's own class list.  Ticket 02's lesson was that an
 //             ordering control needs its output *order* checked and not just its
 //             output, and for this arm the class attribute is that order.
+//   continuationItems / continuationOf
+//             the two complete maps built by _buildContinuationMaps, with keys
+//             sorted but each item's continuation chain left in its produced
+//             order.  Added for ticket 14: equal DOM is irrelevant if selector
+//             narrowing silently drops a map entry.
 //
 // INSPECTOR_ROWS=1 adds a fourth, and it is a different kind of signature: all
 // three above are taken over the *report* documents, so an arm whose only output
@@ -155,6 +160,11 @@ async function signatures() {
         const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
         return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
     };
+    const continuations = window.IXVPERF?.continuationMaps ?? {};
+    const itemParts = Object.keys(continuations.items ?? {}).sort()
+        .map(id => `${id}=${continuations.items[id].join(',')}`);
+    const continuationOfParts = Object.keys(continuations.continuationOf ?? {}).sort()
+        .map(id => `${id}=${continuations.continuationOf[id]}`);
     return {
         docs: docs.length,
         elements,
@@ -165,6 +175,10 @@ async function signatures() {
         domHash: await hash(domParts.join('|')),
         classAttrHash: await hash(classAttrParts.join('|')),
         wrapperHash: await hash(wrapperParts.join('|')),
+        continuationItems: itemParts.length,
+        continuationLinks: continuationOfParts.length,
+        continuationItemsHash: await hash(itemParts.join('|')),
+        continuationOfHash: await hash(continuationOfParts.join('|')),
         rows: document.querySelectorAll('#inspector .facts-by-group .fact-list-item').length,
         sections: document.querySelectorAll('#inspector .facts-by-group .collapsible-section').length,
     };
@@ -317,7 +331,8 @@ async function main() {
                 Object.assign(byArm[armName], await page.evaluate(inspectorRowSignature));
             }
             process.stderr.write(`dom=${byArm[armName].domHash} classAttr=${byArm[armName].classAttrHash} `
-                + `wrapper=${byArm[armName].wrapperHash}`
+                + `wrapper=${byArm[armName].wrapperHash} `
+                + `continuations=${byArm[armName].continuationItemsHash}/${byArm[armName].continuationOfHash}`
                 + (byArm[armName].reviewTextHash
                     ? ` review=${byArm[armName].reviewClassHash} text=${byArm[armName].reviewTextHash}` : '')
                 + (byArm[armName].rowsHash ? ` rows=${byArm[armName].rowsHash}` : '') + `\n`);

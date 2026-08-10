@@ -509,6 +509,30 @@ const SEARCH_ARMS = ['searchnoindex', 'searchnoindexmsg', 'searchnolunr'];
 export const ABLATE_SEARCH = SEARCH_ARMS.includes(ABLATE) ? ABLATE : 'none';
 
 /*
+ * Ticket 14's 2x2 on _buildContinuationMaps.  The baseline asks jQuery for every
+ * descendant of body, then runs a jQuery callback over all of them even though
+ * only four iXBRL element names carrying an id can contribute to either map.
+ *
+ *   contplain   full `body *` selector, native querySelectorAll + for...of.
+ *               Against none: the jQuery collection/iteration overhead, with
+ *               the selected nodes and callback body held fixed.
+ *   contidjq    narrow `body [id]` selector, jQuery find + each.
+ *               Against none: selector narrowing alone, with jQuery held fixed.
+ *               This is the minimal one-line candidate.
+ *   contid      narrow `body [id]` selector, native querySelectorAll + for...of.
+ *               The combined corner of the 2x2; against contidjq it prices
+ *               whether removing jQuery adds anything after narrowing.
+ *
+ * continuationMaps.elementsWalked is the mechanism counter: it is unchanged on
+ * contplain and falls to the id-bearing candidate count on the narrow arms.
+ * eligible, items, edges and links make the narrowing auditable.  Map contents
+ * are asserted separately by assert-wrapper-identity.js under ?ixvexpose=1; a
+ * timing run never retains those live maps.
+ */
+const CONTINUATION_ARMS = ['contplain', 'contidjq', 'contid'];
+export const ABLATE_CONTINUATION = CONTINUATION_ARMS.includes(ABLATE) ? ABLATE : 'none';
+
+/*
  * Ticket 08's rider, carried by rowdefer only.  Resolved once at module load so
  * that the `none` arm's htmlHidden() is the same statement master runs, rather
  * than master's statement with a branch in front of it.

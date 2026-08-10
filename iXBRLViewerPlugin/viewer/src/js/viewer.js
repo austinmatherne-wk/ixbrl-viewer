@@ -8,8 +8,9 @@ import { getIXHiddenLinkStyle, runGenerator, viewerUniqueId, HIGHLIGHT_COLORS } 
 import { DocOrderIndex } from './docOrderIndex.js';
 import { MessageBox } from './messagebox.js';
 import {
-    ABLATE, ABLATE_PROGRESS, ABLATE_UNTAGGED, EXPOSE, PERF_DEEP, perfAdd, perfCount, perfDeepAdd,
-    perfDeepCount, perfDeepNow, perfMark, perfMarkOnce, perfNow, perfSpan, perfWatchGenerator,
+    ABLATE, ABLATE_CONTINUATION, ABLATE_PROGRESS, ABLATE_UNTAGGED, EXPOSE, PERF_DEEP, perfAdd,
+    perfCount, perfDeepAdd, perfDeepCount, perfDeepNow, perfMark, perfMarkOnce, perfNow, perfSpan,
+    perfWatchGenerator,
 } from './perf.js';
 
 export class DocumentTooLargeError extends Error {}
@@ -790,32 +791,74 @@ export class Viewer {
         const nextContinuationMap = {};
         // map of items in default target document to all their continuations
         const itemContinuationMap = {};
-        /* find("body *") materialises every element of the report - 203MB on the
-         * largest corpus fixture - before any phase mark exists on master.  Counted
-         * with a captured local, emitted once. */
+        /* Ticket 14's 2x2 separates selector breadth from jQuery iteration.  The
+         * none path deliberately retains master's chained find().each() shape;
+         * deep spans time whole collections, never individual elements. */
         let walked = 0;
+        let eligible = 0;
         this._iframes.each((n, iframe) => {
             const reportIndex = $(iframe).data("report-index");
-            $(iframe).contents().find("body *").each((m, node) => {
-                walked++;
-                const name = localName(node.nodeName).toUpperCase();
-                if (['NONNUMERIC', 'NONFRACTION', 'FOOTNOTE', 'CONTINUATION'].includes(name) && node.hasAttribute('id')) {
-                    const nodeId = viewerUniqueId(reportIndex, node.getAttribute('id'));
-                    const continuedAtId = viewerUniqueId(reportIndex, node.getAttribute("continuedAt"));
-                    if (continuedAtId !== null) {
-                        nextContinuationMap[nodeId] = continuedAtId;
-                    }
-                    if (name != 'CONTINUATION') {
-                        itemContinuationMap[nodeId] = [];
+            const selectStart = perfDeepNow();
+            let nodes;
+            if (ABLATE_CONTINUATION === 'contidjq') {
+                nodes = $(iframe).contents().find("body [id]");
+            }
+            else if (ABLATE_CONTINUATION === 'contid') {
+                nodes = iframe.contentDocument.querySelectorAll("body [id]");
+            }
+            else if (ABLATE_CONTINUATION === 'contplain') {
+                nodes = iframe.contentDocument.querySelectorAll("body *");
+            }
+            else {
+                nodes = $(iframe).contents().find("body *");
+            }
+            perfDeepAdd('continuationMaps.select', perfDeepNow() - selectStart);
+            walked += nodes.length;
+
+            const iterateStart = perfDeepNow();
+            if (ABLATE_CONTINUATION === 'contplain' || ABLATE_CONTINUATION === 'contid') {
+                for (const node of nodes) {
+                    const name = localName(node.nodeName).toUpperCase();
+                    if (['NONNUMERIC', 'NONFRACTION', 'FOOTNOTE', 'CONTINUATION'].includes(name) && node.hasAttribute('id')) {
+                        eligible++;
+                        const nodeId = viewerUniqueId(reportIndex, node.getAttribute('id'));
+                        const continuedAtId = viewerUniqueId(reportIndex, node.getAttribute("continuedAt"));
+                        if (continuedAtId !== null) {
+                            nextContinuationMap[nodeId] = continuedAtId;
+                        }
+                        if (name != 'CONTINUATION') {
+                            itemContinuationMap[nodeId] = [];
+                        }
                     }
                 }
-            });
+            }
+            else {
+                nodes.each((m, node) => {
+                    const name = localName(node.nodeName).toUpperCase();
+                    if (['NONNUMERIC', 'NONFRACTION', 'FOOTNOTE', 'CONTINUATION'].includes(name) && node.hasAttribute('id')) {
+                        eligible++;
+                        const nodeId = viewerUniqueId(reportIndex, node.getAttribute('id'));
+                        const continuedAtId = viewerUniqueId(reportIndex, node.getAttribute("continuedAt"));
+                        if (continuedAtId !== null) {
+                            nextContinuationMap[nodeId] = continuedAtId;
+                        }
+                        if (name != 'CONTINUATION') {
+                            itemContinuationMap[nodeId] = [];
+                        }
+                    }
+                });
+            }
+            perfDeepAdd('continuationMaps.iterate', perfDeepNow() - iterateStart);
         });
 
         perfCount('continuationMaps.elementsWalked', walked);
+        perfCount('continuationMaps.eligible', eligible);
+        perfCount('continuationMaps.items', Object.keys(itemContinuationMap).length);
+        perfCount('continuationMaps.edges', Object.keys(nextContinuationMap).length);
 
         // Map of continuation IDs to list of (default target doc) items that
         // they're continuations of
+        const chainStart = perfDeepNow();
         this.continuationOfMap = {};
         for (const [itemId, itemContinuations] of Object.entries(itemContinuationMap)) {
             var id = itemId;
@@ -828,7 +871,15 @@ export class Viewer {
                 this.continuationOfMap[id] = itemId;
             }
         }
+        perfDeepAdd('continuationMaps.chain', perfDeepNow() - chainStart);
+        perfCount('continuationMaps.links', Object.keys(this.continuationOfMap).length);
         this.itemContinuationMap = itemContinuationMap;
+        if (EXPOSE) {
+            window.IXVPERF.continuationMaps = {
+                items: this.itemContinuationMap,
+                continuationOf: this.continuationOfMap,
+            };
+        }
     }
 
     _setContinuationMaps() {

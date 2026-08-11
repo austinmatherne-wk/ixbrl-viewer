@@ -3,6 +3,7 @@ import { DocFrame } from './page_objects/doc_frame.js';
 import { FactDetailsPanel } from './page_objects/fact_details_panel.js';
 import { Search } from './page_objects/search_panel.js';
 import { SectionList } from './page_objects/section_list.js';
+import { TextBlockDialog } from './page_objects/text_block_dialog.js';
 import { Toolbar } from './page_objects/toolbar.js';
 
 export class ViewerPage {
@@ -14,6 +15,7 @@ export class ViewerPage {
         this.factDetailsPanel = new FactDetailsPanel(this);
         this.search = new Search(this);
         this.sectionList = new SectionList(this);
+        this.textBlockDialog = new TextBlockDialog(this);
         this.toolbar = new Toolbar(this);
 
         page.on('console', msg => this.log(`${msg.type()} ${msg.text()}`))
@@ -27,8 +29,15 @@ export class ViewerPage {
     }
 
     async navigateToViewer(filingZipName, args = '') {
-        const filingName = filingZipName.replace('.zip', '');
-        const url = `/tests/playwright/artifacts/generated_output/${filingName}.htm${args}`;
+        await this.navigateToGeneratedViewer(
+            filingZipName.replace('.zip', ''), args);
+    }
+
+    // Navigates to a viewer by the name it was generated under, which is not
+    // always the name of a test filing: a filing can be generated into more
+    // than one viewer.
+    async navigateToGeneratedViewer(viewerName, args = '') {
+        const url = `/tests/playwright/artifacts/generated_output/${viewerName}.htm${args}`;
         this.log(`Navigating to ${url}`);
         await this.page.goto(url);
         await expect(this.page.locator('#ixv')).toBeAttached();

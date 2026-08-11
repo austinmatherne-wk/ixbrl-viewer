@@ -31,6 +31,10 @@ export class FactDetailsPanel {
                 this.#viewerPage,
                 '//*[@data-i18n="factDetails.factValue"]//ancestor::tr//*[contains(concat(" ",@class," "), " value ")]',
                 'Fact Value');
+        this.expandTextBlock = new Button(
+                this.#viewerPage,
+                '//*[@data-i18n="factDetails.factValue"]//ancestor::tr//*[contains(@class,"expand-text-block")]',
+                'Expand Text Block');
         this.entity = new Text(
                 this.#viewerPage,
                 '//*[@data-i18n="factDetails.entity"]//ancestor::tr//td',

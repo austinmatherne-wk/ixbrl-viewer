@@ -3,6 +3,92 @@
 import lunr from 'lunr'
 import { ABLATE_SEARCH, perfAdd, perfCount, perfNow, perfSpan } from './perf.js';
 
+/* The indexed fields.  lunr reports and scores fields in declaration order. */
+export const SEARCH_FIELDS = [
+    'label',
+    'concept',
+    'startDate',
+    'date',
+    'doc',
+    'ref',
+    'widerLabel',
+    'widerDoc',
+    'widerConcept',
+];
+
+const INDEX_PIPELINE = [lunr.trimmer, lunr.stopWordFilter, lunr.stemmer];
+
+function isPopulated(value) {
+    return value !== null && value !== undefined && value !== '';
+}
+
+/*
+ * lunr runs the index pipeline once per (document, field), but field strings
+ * repeat heavily: facts share concepts, and every fact in a period shares its
+ * two date strings.  This runs the pipeline once per distinct string instead.
+ *
+ * lunr.Pipeline.run's semantics are reproduced exactly, including the part that
+ * reads like a bug: a stage's result is discarded only when it is null,
+ * undefined or the empty *string*, so a token trimmed down to "" survives and
+ * still counts towards the field's length.  Dropping those rescores every term
+ * query.
+ *
+ * Two assumptions, both pinned by tests: no index pipeline stage looks at a
+ * token's metadata (the field it came from lives there, and this drops it), and
+ * the builder's metadata whitelist is empty (token positions live there too).
+ */
+function memoisingTokenizer() {
+    const cache = new Map();
+    return function (obj) {
+        if (obj === null || obj === undefined) {
+            return [];
+        }
+        const str = obj.toString();
+        let terms = cache.get(str);
+        if (terms === undefined) {
+            let tokens = lunr.tokenizer(str);
+            for (const stage of INDEX_PIPELINE) {
+                const staged = [];
+                for (let i = 0; i < tokens.length; i++) {
+                    const result = stage(tokens[i], i, tokens);
+                    if (result === null || result === undefined || result === '') {
+                        continue;
+                    }
+                    if (Array.isArray(result)) {
+                        staged.push(...result);
+                    }
+                    else {
+                        staged.push(result);
+                    }
+                }
+                tokens = staged;
+            }
+            terms = tokens.map(t => t.toString());
+            cache.set(str, terms);
+        }
+        return terms.map(t => new lunr.Token(t, {}));
+    };
+}
+
+/*
+ * A field that no fact populates has no postings, so no query can match it, but
+ * lunr charges every document a tokenizer call, a term frequency map and a field
+ * vector for it, and the empty query walks it too.  A US filing leaves four of
+ * the nine empty; an ESEF filing populates all nine.
+ */
+export function createIndexBuilder(docs) {
+    const builder = new lunr.Builder();
+    builder.tokenizer = memoisingTokenizer();
+    builder.searchPipeline.add(lunr.stemmer);
+    builder.ref('id');
+    for (const field of SEARCH_FIELDS) {
+        if (docs.some(doc => isPopulated(doc[field]))) {
+            builder.field(field);
+        }
+    }
+    return builder;
+}
+
 export class ReportSearch {
     constructor(reportSet) {
         this._reportSet = reportSet;
@@ -100,27 +186,7 @@ export class ReportSearch {
          * scheduling it does not save. */
         let builder = null;
         if (!noLunr) {
-            builder = new lunr.Builder();
-            builder.pipeline.add(
-              lunr.trimmer,
-              lunr.stopWordFilter,
-              lunr.stemmer
-            )
-
-            builder.searchPipeline.add(
-              lunr.stemmer
-            )
-
-            builder.ref('id');
-            builder.field('label');
-            builder.field('concept');
-            builder.field('startDate');
-            builder.field('date');
-            builder.field('doc');
-            builder.field('ref');
-            builder.field('widerLabel');
-            builder.field('widerDoc');
-            builder.field('widerConcept');
+            builder = createIndexBuilder(docs);
         }
 
         for (const [i, doc] of docs.entries()) {
@@ -256,7 +322,19 @@ export class ReportSearch {
         if (!this.ready) {
             return;
         }
-        const rr = this._searchIndex.search(s.searchString);
+        let rr;
+        try {
+            rr = this._searchIndex.search(s.searchString);
+        }
+        catch (e) {
+            if (!(e instanceof lunr.QueryParseError)) {
+                throw e;
+            }
+            /* An unparseable query, or a field name this index does not carry.
+             * Reported as no matches, which is the state the search pane already
+             * has for a query that finds nothing. */
+            return [];
+        }
         const results = []
         const searchIndex = this;
 

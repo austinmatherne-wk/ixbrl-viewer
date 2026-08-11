@@ -16,6 +16,11 @@ export class Search {
             '//*[@id="ixbrl-search"]', 'Search Input');
     }
 
+    async waitForSearchReady() {
+        this.#viewerPage.log('Waiting for the search index to be built');
+        await this.#viewerPage.page.waitForSelector('#inspector.search-ready');
+    }
+
     async getSearchResults() {
         const elements = await this.#viewerPage.page.$$('.search-results .fact-list-item .title');
         return Promise.all(elements.map(async (e) => {

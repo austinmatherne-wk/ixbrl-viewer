@@ -1549,7 +1549,11 @@ export class Viewer {
 
     postLoadAsync() {
         perfMark('viewer.postLoadAsync.start');
-        runGenerator(perfWatchGenerator(this.postProcess(), 'viewer.postLoadAsync.end'), 'viewer');
+        runGenerator(perfWatchGenerator(this.postProcess(), 'viewer.postLoadAsync.end'), 'viewer', () => this.postProcessingComplete());
+    }
+
+    postProcessingComplete() {
+        $("#ixv").addClass("post-processing-complete");
     }
 
 }

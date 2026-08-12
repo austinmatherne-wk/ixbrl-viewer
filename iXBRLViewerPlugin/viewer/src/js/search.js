@@ -9,16 +9,10 @@ export class ReportSearch {
         this.ready = false;
     }
 
-    /*
-     * Ticket 11 instrumentation.  Three sub-phases, accumulated across the
-     * generator's yields for the same reason viewer.postProcess()'s passes are:
-     * runGenerator resumes on setTimeout(0), so elapsed time here is shared with
-     * the viewer's drain pass and is not this pass's own work.
-     */
-    * buildSearchIndex(doneCallback) {
+    * buildSearchIndex() {
         /* Ticket 12's ceiling arms.  Returning here removes the whole inspector
          * half of the drain: no fact scan, no documents, no lunr, and no
-         * doneCallback - so searchReady() never runs and the search box is never
+         * onDone - so searchReady() never runs and the search box is never
          * enabled.  Unshippable by construction; see perf.js for why the ceiling
          * is what decides this ticket.  The volume counters are emitted as
          * explicit zeros rather than left missing, so a guard table can tell an
@@ -154,7 +148,8 @@ export class ReportSearch {
             ? { search: () => docs.map(d => ({ ref: d.id, score: 0 })) }
             : builder.build());
         this.ready = true;
-        perfSpan('drain.search.doneCallback', doneCallback);
+        /* searchReady / the startup query moved to runGenerator's onDone, so
+         * they run after this generator completes — after the drained mark. */
     }
 
     visibilityFilter(s, item) {

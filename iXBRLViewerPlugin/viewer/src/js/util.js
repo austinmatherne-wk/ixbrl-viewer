@@ -190,20 +190,23 @@ export function setDefault(obj, key, def) {
 }
 
 /*
- * Ticket 04 instrumentation and arms.  On the 'none' arm this is the master
- * function with a resume counter added: one generator.next() per posted
- * setTimeout(0), and the post still happens after the slice rather than before
- * it, so nothing about the baseline's scheduling is altered.  See ABLATE_SCHED in
- * perf.js for what each arm changes and which counters guard it.
- *
- * The budget is deliberately well under a 16.7ms frame: the yield exists to keep
- * the page responsive during a multi-second drain, and an arm that buys its delta
- * by holding the main thread for longer than the baseline ever did would be
- * answering a different question.
+ * Ticket 04 instrumentation and arms, plus wrapper-loop's onDone.  The second
+ * argument is a hop-counter label (string) or onDone (function); the third is
+ * onDone when a label is passed.  Feature tests call runGenerator(gen, onDone);
+ * instrumented call sites pass a label.  onDone runs after the generator
+ * completes, which is after perfWatchGenerator marks the drain end.
  */
 const YIELD_BUDGET_MS = 5;
 
-export function runGenerator(generator, label) {
+export function runGenerator(generator, labelOrOnDone, onDone) {
+    let label;
+    if (typeof labelOrOnDone === 'function') {
+        onDone = labelOrOnDone;
+        label = undefined;
+    }
+    else {
+        label = labelOrOnDone;
+    }
     const budget = ABLATE_SCHED === 'yieldbudget' || ABLATE_SCHED === 'yieldboth'
         || ABLATE_SCHED === 'yieldsched';
     let hops = 0;
@@ -214,15 +217,7 @@ export function runGenerator(generator, label) {
         let res;
         if (budget) {
             /* The deadline is taken BEFORE the first next(), so a hop runs one
-             * slice and then only keeps going while the budget is unspent.  Taken
-             * after it instead, the first deadline test is trivially true and
-             * every hop runs at least *two* slices - which on a fixture whose
-             * slices already exceed the budget doubles the longest uninterrupted
-             * run of script, for no gain.  Measured: it cost aviva-2025 44ms of
-             * frame lag against the baseline and bought nothing.
-             *
-             * performance.now() rather than perfNow(): the budget is part of the
-             * candidate fix, so it must keep working on an uninstrumented build. */
+             * slice and then only keeps going while the budget is unspent. */
             const deadline = performance.now() + YIELD_BUDGET_MS;
             do {
                 res = generator.next();
@@ -236,6 +231,9 @@ export function runGenerator(generator, label) {
             return;
         }
         perfCount(`sched.hops.${label ?? 'unlabelled'}`, hops);
+        if (onDone !== undefined) {
+            onDone();
+        }
         return;
     }
 

@@ -21,7 +21,7 @@ import { CalculationInspector } from './calculationInspector.js';
 import { ReportSetOutline } from './outline.js';
 import { DIMENSIONS_KEY, DocumentSummary, MEMBERS_KEY, PRIMARY_ITEMS_KEY, TOTAL_KEY } from './summary.js';
 import { getTheme, darkModeTheme, lightModeTheme } from './theme.js';
-import { ABLATE, PERF_DEEP, perfAdd, perfClose, perfCount, perfDeepNow, perfMark, perfOpen, perfPush, perfSpan, perfWatchGenerator } from './perf.js';
+import { ABLATE, ABLATE_SEARCH, PERF_DEEP, perfAdd, perfClose, perfCount, perfDeepNow, perfMark, perfOpen, perfPush, perfSpan, perfWatchGenerator } from './perf.js';
 
 const SEARCH_PAGE_SIZE = 100
 const SECTION_LIST_SECTIONS = "#inspector .facts-by-group > .collapsible-section";
@@ -383,8 +383,13 @@ export class Inspector {
     postLoadAsync() {
         perfMark('inspector.postLoadAsync.start');
         runGenerator(perfWatchGenerator(
-            this._search.buildSearchIndex(() => this.searchReady()),
-            'inspector.postLoadAsync.end'), 'search');
+            this._search.buildSearchIndex(),
+            'inspector.postLoadAsync.end'), 'search', () => {
+                if (ABLATE_SEARCH === 'searchnoindex' || ABLATE_SEARCH === 'searchnoindexmsg') {
+                    return;
+                }
+                this.searchReady();
+            });
     }
 
     /*

@@ -885,7 +885,11 @@ export class Viewer {
     }
 
     postLoadAsync() {
-        runGenerator(this.postProcess());
+        runGenerator(this.postProcess(), () => this.postProcessingComplete());
+    }
+
+    postProcessingComplete() {
+        $("#ixv").addClass("post-processing-complete");
     }
 
 }

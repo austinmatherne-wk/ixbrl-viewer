@@ -86,27 +86,51 @@ export class DocumentSummary {
         return tagCounts.get(prefix);
     }
 
+    _dimensionTagInfo(report, dimension, cache) {
+        let info = cache.get(dimension);
+        if (info === undefined) {
+            const dimensionConcept = report.getConcept(dimension);
+            info = {
+                hasDefinition: dimensionConcept.hasDefinition,
+                isTyped: dimensionConcept.hasDefinition && dimensionConcept.isTypedDimension(),
+                typedDomainElement: dimensionConcept.hasDefinition
+                    ? dimensionConcept.typedDomainElement()
+                    : undefined,
+            };
+            if (!info.hasDefinition) {
+                console.log("Missing definition for dimension: " + dimension);
+            }
+            cache.set(dimension, info);
+        }
+        return info;
+    }
+
     _buildTagCounts() {
         const tagCounts = new Map();
         const identifierCounts = new Map();
+        const cachesByReport = new WeakMap();
         for (const fact of this._reportSet.facts()) {
             let counter = this._getTagCounter(tagCounts, fact.conceptName());
             counter.addPrimaryItem(fact.conceptName());
+            let cache = cachesByReport.get(fact.report);
+            if (cache === undefined) {
+                cache = new Map();
+                cachesByReport.set(fact.report, cache);
+            }
             for (const [dimension, member] of Object.entries(fact.dimensions())) {
                 counter = this._getTagCounter(tagCounts, dimension);
                 counter.addDimension(dimension);
 
-                const dimensionConcept = fact.report.getConcept(dimension);
-                if (!dimensionConcept.hasDefinition) {
-                    console.log("Missing definition for dimension: " + dimension);
+                const info = this._dimensionTagInfo(fact.report, dimension, cache);
+                if (!info.hasDefinition) {
+                    continue;
                 }
-                else if (dimensionConcept.isTypedDimension()) {
-                    const typedDomainElement = dimensionConcept.typedDomainElement();
-                    if (typedDomainElement) {
-                        counter = this._getTagCounter(tagCounts, typedDomainElement);
-                        counter.addMember(typedDomainElement);
+                if (info.isTyped) {
+                    if (info.typedDomainElement) {
+                        counter = this._getTagCounter(tagCounts, info.typedDomainElement);
+                        counter.addMember(info.typedDomainElement);
                     }
-                } 
+                }
                 else {
                     counter = this._getTagCounter(tagCounts, member);
                     counter.addMember(member);

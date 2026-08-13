@@ -193,9 +193,9 @@ export class Viewer {
     //
     _wrapNode(n) {
         if (Array.from(n.childNodes).some(n => n.nodeType === Node.TEXT_NODE && !/^\s*$/.test(n.nodeValue) )) {
-            let wrapper = "<span>";
+            let tag = "span";
             if (getComputedStyle(n).getPropertyValue("display") === "block") {
-                wrapper = '<div>';
+                tag = "div";
             }
             else {
                 const nn = n.getElementsByTagName("*");
@@ -203,7 +203,7 @@ export class Viewer {
                 for (var i = 0; i < nn.length; i++) {
                     tests++;
                     if (getComputedStyle(nn[i]).getPropertyValue('display') === "block") {
-                        wrapper = '<div>';
+                        tag = "div";
                         break;
                     }
                 }
@@ -212,9 +212,11 @@ export class Viewer {
                  * block. */
                 perfDeepCount('wrapNode.displayTests', tests);
             }
-            $(n).wrap(wrapper);
+            const wrapper = n.ownerDocument.createElement(tag);
+            n.parentNode.insertBefore(wrapper, n);
+            wrapper.appendChild(n);
             perfDeepCount('wrapNode.wrapped');
-            return [n.parentNode];
+            return [wrapper];
         }
         else {
             perfDeepCount('wrapNode.reusedChildren');

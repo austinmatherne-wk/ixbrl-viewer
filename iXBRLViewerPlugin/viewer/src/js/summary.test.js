@@ -213,6 +213,125 @@ describe("Tags summary", () => {
             }
         });
     });
+
+    test("many facts sharing a dimension still count that dimension once", () => {
+        const identifier = testQName('lei', '123', 'http://example.com');
+        const dimension = "eg:dimension";
+        const member = "eg:member";
+        const facts = [];
+        for (let i = 0; i < 50; i++) {
+            facts.push(testFact("eg:Concept1", { [dimension]: member }, identifier));
+        }
+        const concepts = {
+            [dimension]: testConcept(),
+        };
+        const reportSet = testReportSet(concepts, facts, {}, []);
+        const summary = new DocumentSummary(reportSet);
+
+        expect(Object.fromEntries(summary.tagCounts())).toEqual({
+            'eg': {
+                "dimensions": 1,
+                "members": 1,
+                "primaryItems": 1,
+                "total": 3
+            }
+        });
+    });
+
+    test("a typed dimension with no domain element is counted as a dimension only", () => {
+        const identifier = testQName('lei', '123', 'http://example.com');
+        const dimension = "eg:dimension";
+        const fact = testFact("eg:Concept1", { [dimension]: "RegionNorth" }, identifier);
+        const concepts = {
+            [dimension]: {
+                isTypedDimension: () => true,
+                typedDomainElement: () => undefined,
+                hasDefinition: true,
+            },
+        };
+        const reportSet = testReportSet(concepts, [fact], {}, []);
+        const summary = new DocumentSummary(reportSet);
+
+        expect(Object.fromEntries(summary.tagCounts())).toEqual({
+            'eg': {
+                "dimensions": 1,
+                "members": 0,
+                "primaryItems": 1,
+                "total": 2
+            }
+        });
+    });
+
+    test("a dimension without a definition is counted as a dimension but not as a member", () => {
+        const identifier = testQName('lei', '123', 'http://example.com');
+        const dimension = "eg:dimension";
+        const member = "xz:member";
+        const fact = testFact("eg:Concept1", { [dimension]: member }, identifier);
+        const concepts = {
+            [dimension]: {
+                isTypedDimension: () => true,
+                typedDomainElement: () => "ab:domain",
+                hasDefinition: false,
+            },
+        };
+        const reportSet = testReportSet(concepts, [fact], {}, []);
+        const summary = new DocumentSummary(reportSet);
+
+        expect(Object.fromEntries(summary.tagCounts())).toEqual({
+            'eg': {
+                "dimensions": 1,
+                "members": 0,
+                "primaryItems": 1,
+                "total": 2
+            }
+        });
+    });
+
+    test("the same dimension name on two reports keeps each report's typedness", () => {
+        const identifier = testQName('lei', '123', 'http://example.com');
+        const dimension = "eg:dimension";
+        const explicitMember = "ab:member";
+        const typedDomain = "xz:domain";
+        const factA = testFact("eg:Concept1", { [dimension]: explicitMember }, identifier);
+        const factB = testFact("eg:Concept1", { [dimension]: "RegionNorth" }, identifier);
+        const reportA = {
+            getConcept: () => testConcept(),
+            localDocuments: () => ({}),
+        };
+        const reportB = {
+            getConcept: () => testConcept(typedDomain),
+            localDocuments: () => ({}),
+        };
+        factA.report = reportA;
+        factB.report = reportB;
+        const reportSet = {
+            facts: () => [factA, factB],
+            getSoftwareCredits: () => [],
+            reports: [reportA, reportB],
+        };
+        const summary = new DocumentSummary(reportSet);
+
+        expect(Object.fromEntries(summary.tagCounts())).toEqual({
+            'eg': {
+                "dimensions": 1,
+                "members": 0,
+                "primaryItems": 1,
+                "total": 2
+            },
+            'ab': {
+                "dimensions": 0,
+                "members": 1,
+                "primaryItems": 0,
+                "total": 1
+            },
+            'xz': {
+                "dimensions": 0,
+                "members": 1,
+                "primaryItems": 0,
+                "total": 1
+            }
+        });
+    });
 });
 
 describe("Identifiers summary", () => {

@@ -38,6 +38,9 @@ const testReportData = {
                 "eg:Root1": [
                     { t: "eg:LineItem1" }
                 ],
+                "eg:LineItem1": [
+                    { t: "eg:LineItemNested" }
+                ],
             },
             elr2: {
                 "eg:Root1": [
@@ -88,6 +91,7 @@ function addTestDimension(r, label, typed) {
 addTestConcept(testReportData, "Root 1");
 addTestConcept(testReportData, "Line Item 1");
 addTestConcept(testReportData, "Line Item 2");
+addTestConcept(testReportData, "Line Item Nested");
 addTestConcept(testReportData, "Line Item Dim 1");
 addTestConcept(testReportData, "Member 1");
 addTestConcept(testReportData, "Member 2");
@@ -164,6 +168,12 @@ const testFacts =  {
                 "eg:TypedDimension1": "1234"
             }
         },
+        fn: {
+            a: {
+                c: "eg:LineItemNested",
+                p: "2019-01-01"
+            }
+        },
     };
 
 function testReportSet(factList) {
@@ -199,6 +209,18 @@ describe("Section filtering", () => {
         expect(outline.factInGroup(getFact(reportSet, "f2"), "elr3")).toBe(true);
 
         expect(outline.sortedSections().map(g => g.elr)).toEqual(["elr1", "elr3"]);
+    });
+
+    test("Nested presentation concept", () => {
+        const reportSet = testReportSet(["fn"]);
+        const outline = new DocumentOutline(reportSet.reports[0]);
+        const fn = getFact(reportSet, "fn");
+        expect(outline.factInGroup(fn, "elr1")).toBe(true);
+        expect(outline.factInGroup(fn, "elr2")).toBe(false);
+        expect(outline.factInGroup(fn, "elr3")).toBe(false);
+        expect(outline.sortedSections().map(g => g.elr)).toEqual(["elr1"]);
+        expect(outline.sectionFacts["elr1"][0].localId()).toEqual("fn");
+        expect(outline.groupsForFact(fn).map(g => g.elr)).toEqual(["elr1"]);
     });
 
     test("First group", () => {
@@ -352,6 +374,18 @@ describe("Section grouping", () => {
         const outline = new DocumentOutline(reportSet.reports[0]);
         const elr1 = outline.sortedSections().find(s => s.elr === "elr1");
         expect(elr1.facts.map(f => f.localId())).toEqual(["f1", "f1a", "f1b"]);
+    });
+
+    test("Nested concept still belongs only to its own group's run", () => {
+        const reportSet = testReportSet(["f1", "fn", "f2"]);
+        const outline = new DocumentOutline(reportSet.reports[0]);
+        const sections = outline.sortedSections();
+        const elr1 = sections.find(s => s.elr === "elr1");
+        const elr3 = sections.find(s => s.elr === "elr3");
+        expect(sections.map(g => g.elr)).toEqual(["elr1", "elr3"]);
+        expect(elr1.facts.map(f => f.localId())).toEqual(["f1", "fn"]);
+        expect(elr3.facts.map(f => f.localId())).toEqual(["f2"]);
+        expect(elr1.firstFact.localId()).toEqual("f1");
     });
 
     test("Hidden facts", () => {

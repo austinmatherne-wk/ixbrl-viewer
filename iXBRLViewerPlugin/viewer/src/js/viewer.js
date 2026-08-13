@@ -138,24 +138,26 @@ export class Viewer {
         const elementChildren = childNodes.filter(n => n.nodeType === Node.ELEMENT_NODE);
         const hasText = childNodes.some(n => n.nodeType === Node.TEXT_NODE && !/^\s*$/.test(n.nodeValue));
         if (hasText || elementChildren.length === 0) {
-            let wrapper = "<span>";
+            let tag = "span";
             if (getComputedStyle(n).getPropertyValue("display") === "block") {
-                wrapper = '<div>';
+                tag = "div";
             }
             else {
                 const nn = n.getElementsByTagName("*");
                 for (var i = 0; i < nn.length; i++) {
                     if (getComputedStyle(nn[i]).getPropertyValue('display') === "block") {
-                        wrapper = '<div>';
+                        tag = "div";
                         break;
                     }
                 }
             }
-            $(n).wrap(wrapper);
+            const wrapper = n.ownerDocument.createElement(tag);
+            n.parentNode.insertBefore(wrapper, n);
+            wrapper.appendChild(n);
             if (!hasText) {
-                n.parentNode.classList.add("ixbrl-no-content");
+                wrapper.classList.add("ixbrl-no-content");
             }
-            return [n.parentNode];
+            return [wrapper];
         }
         else {
             return elementChildren;

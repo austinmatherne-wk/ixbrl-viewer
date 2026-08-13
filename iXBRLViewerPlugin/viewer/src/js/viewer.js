@@ -137,21 +137,23 @@ export class Viewer {
     //
     _wrapNode(n) {
         if (Array.from(n.childNodes).some(n => n.nodeType === Node.TEXT_NODE && !/^\s*$/.test(n.nodeValue) )) {
-            let wrapper = "<span>";
+            let tag = "span";
             if (getComputedStyle(n).getPropertyValue("display") === "block") {
-                wrapper = '<div>';
+                tag = "div";
             }
             else {
                 const nn = n.getElementsByTagName("*");
                 for (var i = 0; i < nn.length; i++) {
                     if (getComputedStyle(nn[i]).getPropertyValue('display') === "block") {
-                        wrapper = '<div>';
+                        tag = "div";
                         break;
                     }
                 }
             }
-            $(n).wrap(wrapper);
-            return [n.parentNode];
+            const wrapper = n.ownerDocument.createElement(tag);
+            n.parentNode.insertBefore(wrapper, n);
+            wrapper.appendChild(n);
+            return [wrapper];
         }
         else {
             return Array.from(n.childNodes).filter(n => n.nodeType === Node.ELEMENT_NODE);

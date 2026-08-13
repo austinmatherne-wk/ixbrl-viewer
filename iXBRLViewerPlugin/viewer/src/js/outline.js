@@ -27,42 +27,64 @@ export class ReportSetOutline {
 export class DocumentOutline {
     constructor(report) {
         this.report = report;
+        this._elrsByConcept = Object.create(null);
         const facts = report.facts().sort((a, b) => a.ixNode.docOrderindex - b.ixNode.docOrderindex);
         const runFacts = {};
         const longestRunFacts = {};
         this._buildDimensionMap();
-        const elrs = report.relationshipGroups("pres");
+
+        const closeRun = (elr) => {
+            if (!(elr in longestRunFacts) || longestRunFacts[elr].length < runFacts[elr].length) {
+                longestRunFacts[elr] = runFacts[elr];
+            }
+            delete runFacts[elr];
+        };
+
         for (const f of facts) {
             if (f.isHidden()) {
                 continue;
             }
-            for (const elr of elrs) {
+            const matched = new Set();
+            for (const elr of this._elrsForConcept(f.conceptName())) {
                 if (this.factInGroup(f, elr)) {
-                    if (!(elr in runFacts)) {
-                        // Start a new run
-                        runFacts[elr] = [];
-                    }
-                    runFacts[elr].push(f);
+                    matched.add(elr);
                 }
-                else if (elr in runFacts) {
-                    // End of a run
-                    if (!(elr in longestRunFacts) || longestRunFacts[elr].length < runFacts[elr].length) {
-                        longestRunFacts[elr] = runFacts[elr];
-                    }
-                    delete runFacts[elr];
+            }
+            for (const elr of Object.keys(runFacts)) {
+                if (!matched.has(elr)) {
+                    closeRun(elr);
                 }
+            }
+            for (const elr of matched) {
+                if (!(elr in runFacts)) {
+                    runFacts[elr] = [];
+                }
+                runFacts[elr].push(f);
             }
         }
 
         // End of document, check if any current runs are the longest run for the
         // ELR.
-        for (const elr in runFacts) {
-            if (!(elr in longestRunFacts) || longestRunFacts[elr].length < runFacts[elr].length) {
-                longestRunFacts[elr] = runFacts[elr];
-            }
+        for (const elr of Object.keys(runFacts)) {
+            closeRun(elr);
         }
 
         this.sectionFacts = longestRunFacts;
+    }
+
+    // Presentation ELRs in which this concept has a parent.  A fact cannot
+    // participate in any other ELR, so the constructor tests only these instead
+    // of every presentation group.  Intersected with the live group list so a
+    // stale reverse-relationship cache cannot resurrect deleted presentation.
+    _elrsForConcept(conceptName) {
+        let elrs = this._elrsByConcept[conceptName];
+        if (elrs === undefined) {
+            const groups = new Set(this.report.relationshipGroups("pres"));
+            elrs = Object.keys(this.report.getParentRelationships(conceptName, "pres"))
+                .filter(elr => groups.has(elr));
+            this._elrsByConcept[conceptName] = elrs;
+        }
+        return elrs;
     }
 
     // Returns true if a fact participates in the given presentation group.
@@ -75,6 +97,9 @@ export class DocumentOutline {
         }
         const fd = fact.dimensions();
         const dm = this.dimensionMap[elr];
+        if (dm === undefined) {
+            return false;
+        }
         // Check all dimensions specified in this ELR
         for (const [dim, spec] of Object.entries(dm)) {
             // If a fact has a dimension, it must be in the list of permitted
@@ -150,7 +175,7 @@ export class DocumentOutline {
     // Returns a list of presentation groups that this fact participates in
     groupsForFact(fact) {
         const factGroups = [];
-        for (const group of this.report.relationshipGroups("pres")) {
+        for (const group of this._elrsForConcept(fact.conceptName())) {
             if (this.factInGroup(fact, group)) {
                 factGroups.push({ elr: group, fact: this.sectionFacts[group][0], report: this.report});
             }

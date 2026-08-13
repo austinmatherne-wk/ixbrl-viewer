@@ -89,6 +89,63 @@ export function createIndexBuilder(docs) {
     return builder;
 }
 
+function newSearchFieldCache() {
+    return { concepts: new Map(), typed: new Map(), members: new Map() };
+}
+
+function cachedConceptSearchFields(fact, cache) {
+    const name = fact.conceptName();
+    let fields = cache.concepts.get(name);
+    if (fields === undefined) {
+        const wider = fact.widerConcepts();
+        fields = {
+            concept: fact.conceptQName().localname,
+            doc: fact.getLabel("doc"),
+            std: fact.getLabel("std"),
+            ref: fact.concept().referenceValuesAsString(),
+        };
+        if (wider.length > 0) {
+            fields.widerConcept = fact.report.qname(wider[0]).localname;
+            fields.widerLabel = fact.report.getLabel(wider[0], "std");
+            fields.widerDoc = fact.report.getLabel(wider[0], "doc");
+        }
+        cache.concepts.set(name, fields);
+    }
+    return fields;
+}
+
+function cachedIsTypedDimension(report, name, cache) {
+    let typed = cache.typed.get(name);
+    if (typed === undefined) {
+        typed = report.getConcept(name).isTypedDimension();
+        cache.typed.set(name, typed);
+    }
+    return typed;
+}
+
+function cachedMemberStdLabel(report, name, cache) {
+    if (!cache.members.has(name)) {
+        cache.members.set(name, report.getLabel(name, "std"));
+    }
+    return cache.members.get(name);
+}
+
+function labelWithDimensions(fact, stdLabel, cache) {
+    let l = stdLabel;
+    const dims = fact.dimensions();
+    for (const d in dims) {
+        if (cachedIsTypedDimension(fact.report, d, cache)) {
+            if (dims[d] !== null) {
+                l += " " + dims[d];
+            }
+        }
+        else {
+            l += " " + cachedMemberStdLabel(fact.report, dims[d], cache);
+        }
+    }
+    return l;
+}
+
 export class ReportSearch {
     constructor(reportSet) {
         this._reportSet = reportSet;
@@ -117,6 +174,7 @@ export class ReportSearch {
         var facts = perfSpan('drain.search.facts', () => this._reportSet.facts());
         perfCount('drain.search.factCount', facts.length);
         this.periods = {};
+        const cachesByReport = new WeakMap();
         let acc = 0;
         /* Ticket 11: the drain's elapsed time exceeds the two passes' work by up
          * to half, and a yield is where that difference is spent - so the count is
@@ -132,34 +190,27 @@ export class ReportSearch {
                 if (f.isHidden() !== hidden) {
                     continue;
                 }
-                var doc = { "id": f.vuid };
-                var l = f.getLabel("std");
-                doc.concept = f.conceptQName().localname;
-                doc.doc = f.getLabel("doc");
-                doc.date = f.periodTo();
-                doc.startDate = f.periodFrom();
-                var dims = f.dimensions();
-                for (var d in dims) {
-                    if (f.report.getConcept(d).isTypedDimension()) {
-                        if (dims[d] !== null) {
-                            l += " " + dims[d];
-                        }
-                    }
-                    else {
-                        l += " " + f.report.getLabel(dims[d], "std");
-                    }
+                let cache = cachesByReport.get(f.report);
+                if (cache === undefined) {
+                    cache = newSearchFieldCache();
+                    cachesByReport.set(f.report, cache);
                 }
-                doc.label = l;
-                doc.ref = f.concept().referenceValuesAsString();
-                const wider = f.widerConcepts();
-                if (wider.length > 0) {
-                    doc.widerConcept = f.report.qname(wider[0]).localname;
-                    doc.widerLabel = f.report.getLabel(wider[0], "std");
-                    doc.widerDoc = f.report.getLabel(wider[0], "doc");
+                const conceptDoc = cachedConceptSearchFields(f, cache);
+                const p = f.period();
+                var doc = { "id": f.vuid };
+                doc.concept = conceptDoc.concept;
+                doc.doc = conceptDoc.doc;
+                doc.date = p.to();
+                doc.startDate = p.from();
+                doc.label = labelWithDimensions(f, conceptDoc.std, cache);
+                doc.ref = conceptDoc.ref;
+                if (conceptDoc.widerConcept !== undefined) {
+                    doc.widerConcept = conceptDoc.widerConcept;
+                    doc.widerLabel = conceptDoc.widerLabel;
+                    doc.widerDoc = conceptDoc.widerDoc;
                 }
                 docs.push(doc);
 
-                var p = f.period();
                 if (p) {
                     this.periods[p.key()] = p.toString();
                 }

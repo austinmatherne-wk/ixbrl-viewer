@@ -787,3 +787,141 @@ describe("Search mandatory facts filter", () => {
         expect(results).toEqual(['mandatory1', 'other1']);
     });
 });
+
+describe("Indexed document fields", () => {
+    function idsFor(reportSearch, searchString) {
+        return reportSearch.search(testSearchSpec(searchString)).map(r => r.fact.localId()).sort();
+    }
+
+    test("facts that share a concept all match that concept's standard label", () => {
+        const reportSearch = getReportSearch(testReport({
+            "concepts": {
+                ...createSimpleConcept("a:Cash", "Cash"),
+                ...createSimpleConcept("a:Debt", "Debt"),
+            },
+            "facts": {
+                ...createSimpleFact("cash1", "a:Cash"),
+                ...createSimpleFact("cash2", "a:Cash"),
+                ...createSimpleFact("debt1", "a:Debt"),
+            },
+        }));
+
+        expect(idsFor(reportSearch, "Cash")).toEqual(["cash1", "cash2"]);
+        expect(idsFor(reportSearch, "Debt")).toEqual(["debt1"]);
+    });
+
+    test("an explicit dimension member label matches only the dimensionalized fact", () => {
+        const reportSearch = getReportSearch(testReport({
+            "concepts": {
+                ...createSimpleConcept("test:Concept", "Concept"),
+                ...createSimpleConcept("test:Member", "Midwest"),
+                ...createDimensionConcept("test:ExplicitDimension", "ExplicitDimension"),
+            },
+            "facts": {
+                ...createSimpleFact("plain", "test:Concept"),
+                ...createDimensionalizedFact("explicit", "test:Concept", null, {
+                    "test:ExplicitDimension": "test:Member",
+                }),
+            },
+        }));
+
+        expect(idsFor(reportSearch, "Concept")).toEqual(["explicit", "plain"]);
+        expect(idsFor(reportSearch, "Midwest")).toEqual(["explicit"]);
+    });
+
+    test("a typed dimension value matches the dimensionalized fact", () => {
+        const reportSearch = getReportSearch(testReport({
+            "concepts": {
+                ...createSimpleConcept("test:Concept", "Concept"),
+                ...createDimensionConcept("test:TypedDimension", "TypedDimension", false),
+            },
+            "facts": {
+                ...createSimpleFact("plain", "test:Concept"),
+                ...createDimensionalizedFact("typed", "test:Concept", null, {
+                    "test:TypedDimension": "RegionNorth",
+                }),
+            },
+        }));
+
+        expect(idsFor(reportSearch, "RegionNorth")).toEqual(["typed"]);
+    });
+
+    test("a documentation label matches the fact", () => {
+        const concepts = {
+            ...createSimpleConcept("a:Cash", "Cash"),
+            ...createSimpleConcept("a:Debt", "Debt"),
+        };
+        concepts["a:Cash"].labels.doc["en-us"] = "liquid assets definition";
+        const reportSearch = getReportSearch(testReport({
+            "concepts": concepts,
+            "facts": {
+                ...createSimpleFact("cash1", "a:Cash"),
+                ...createSimpleFact("debt1", "a:Debt"),
+            },
+        }));
+
+        expect(idsFor(reportSearch, "liquid")).toEqual(["cash1"]);
+    });
+
+    test("a concept reference matches the fact", () => {
+        const concepts = {
+            ...createSimpleConcept("a:Cash", "Cash"),
+            ...createSimpleConcept("a:Debt", "Debt"),
+        };
+        concepts["a:Cash"].r = [[["Part1", "IFRS7Paragraph25"]]];
+        const reportSearch = getReportSearch(testReport({
+            "concepts": concepts,
+            "facts": {
+                ...createSimpleFact("cash1", "a:Cash"),
+                ...createSimpleFact("debt1", "a:Debt"),
+            },
+        }));
+
+        expect(idsFor(reportSearch, "IFRS7Paragraph25")).toEqual(["cash1"]);
+    });
+
+    test("a wider-concept label matches the fact", () => {
+        const reportSearch = getReportSearch(testReport({
+            "concepts": {
+                ...createSimpleConcept("eg:Assets", "Total assets"),
+                ...createSimpleConcept("eg:Cash", "Cash"),
+            },
+            "facts": {
+                ...createSimpleFact("cash1", "eg:Cash"),
+                ...createSimpleFact("assets1", "eg:Assets"),
+            },
+            "rels": {
+                "w-n": {
+                    "role1": {
+                        "eg:Assets": [{"t": "eg:Cash"}],
+                    },
+                },
+            },
+        }));
+
+        expect(idsFor(reportSearch, "Total assets")).toEqual(["assets1", "cash1"]);
+        expect(idsFor(reportSearch, "Cash")).toEqual(["cash1"]);
+    });
+
+    test("the same concept on two reports keeps each report's labels", () => {
+        const reportSearch = getReportSearch(testReportSet([
+            {
+                data: {
+                    "concepts": { ...createSimpleConcept("eg:Item", "AlphaLabel") },
+                    "facts": { ...createSimpleFact("f1", "eg:Item") },
+                    "prefixes": { "eg": "http://example.com" },
+                },
+            },
+            {
+                data: {
+                    "concepts": { ...createSimpleConcept("eg:Item", "BetaLabel") },
+                    "facts": { ...createSimpleFact("f2", "eg:Item") },
+                    "prefixes": { "eg": "http://example.com" },
+                },
+            },
+        ]));
+
+        expect(idsFor(reportSearch, "AlphaLabel")).toEqual(["f1"]);
+        expect(idsFor(reportSearch, "BetaLabel")).toEqual(["f2"]);
+    });
+});

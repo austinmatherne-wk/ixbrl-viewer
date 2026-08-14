@@ -18,7 +18,13 @@
 //   TIERS=1,4         CPU throttle tiers.  Default "1,4".
 //   LEVEL=phase|deep  ?ixvperf= level.  deep splits the wrapper hot path and
 //                     distorts it; never source a phase table from deep.
-//   REVIEW=1          load with ?review=1, so the untagged-numbers phase runs.
+//   ALL_ON=1          the map's all-on config: ?review=1&search_on_startup=1&
+//                     highlight_facts_on_startup=1.  Unset is none (no feature
+//                     params).  CONFIG=all-on is an alias.  Do not also require
+//                     REVIEW=1.  Do not encode none-vs-all-on as ABLATE_ARMS —
+//                     that flag is mutually exclusive with CONTROL.
+//   REVIEW=1          load with ?review=1 only (review-only; not a campaign
+//                     config).  Ignored when ALL_ON is set.
 //   CONTROL=dir       repo checkout of a second build to measure as a paired arm
 //                     on a second port, same session, alternating runs.  Its
 //                     dist/ixbrlviewer.dev.js must already be built.
@@ -49,6 +55,7 @@ const BUNDLE = path.join('iXBRLViewerPlugin', 'viewer', 'dist', 'ixbrlviewer.dev
 const RUNS = Number(process.env.RUNS || 5);
 const TIERS = (process.env.TIERS || '1,4').split(',').map(Number);
 const LEVEL = process.env.LEVEL || 'phase';
+const ALL_ON = process.env.ALL_ON === '1' || process.env.CONFIG === 'all-on';
 const CONTROL = process.env.CONTROL || null;
 const ABLATE_ARMS = process.env.ABLATE_ARMS ? process.env.ABLATE_ARMS.split(',') : null;
 const PAIR_MODE = process.env.PAIR_MODE === '1';
@@ -276,7 +283,10 @@ async function measure(browser, armObj, fx, tier, runIndex) {
     if (armObj.ablate !== undefined && armObj.ablate !== 'none') {
         params.push(`ixvablate=${armObj.ablate}`);
     }
-    if (process.env.REVIEW === '1') {
+    if (ALL_ON) {
+        params.push('review=1', 'search_on_startup=1', 'highlight_facts_on_startup=1');
+    }
+    else if (process.env.REVIEW === '1') {
         params.push('review=1');
     }
     const url = `${base}/${fx.slug}/${fx.entry}` + (params.length ? `?${params.join('&')}` : '');
@@ -321,6 +331,31 @@ async function measure(browser, armObj, fx, tier, runIndex) {
             domContentLoadedEventEnd: nav.domContentLoadedEventEnd,
             sections: document.querySelectorAll('#inspector .facts-by-group .collapsible-section').length,
             rows: document.querySelectorAll('#inspector .facts-by-group .fact-list-item').length,
+            /* Campaign configs none vs all-on: counters, not milliseconds.
+             * search-mode lands on #ixv (inspectorMode); highlight-tags.checked
+             * is the highlightTagsOnStartup() true path; .ixbrl-highlight is
+             * the class that walk adds.  localStorage is recorded so a HEADFUL
+             * leak is visible — feature-on highlight does not write the pref. */
+            features: (() => {
+                let highlightClassCount = 0;
+                let untaggedWraps = 0;
+                for (const iframe of document.querySelectorAll('iframe')) {
+                    const doc = iframe.contentDocument;
+                    if (!doc) {
+                        continue;
+                    }
+                    highlightClassCount += doc.querySelectorAll('.ixbrl-highlight').length;
+                    untaggedWraps += doc.querySelectorAll(
+                        '.review-untagged-number, .review-untagged-date').length;
+                }
+                return {
+                    searchMode: document.getElementById('ixv')?.classList.contains('search-mode') ? 1 : 0,
+                    highlightTagsOnStartup: document.getElementById('highlight-tags')?.classList.contains('checked') ? 1 : 0,
+                    highlightClassCount,
+                    untaggedWraps,
+                    localStorageHighlight: window.localStorage.getItem('ixbrl-viewer-highlight-all-facts'),
+                };
+            })(),
         };
     });
     Object.assign(out, {
@@ -329,6 +364,7 @@ async function measure(browser, armObj, fx, tier, runIndex) {
         sections: observed.sections,
         rows: observed.rows,
         external: observed.external,
+        features: observed.features,
     });
 
     const perf = observed.perf;
@@ -490,6 +526,7 @@ function aggregate(runs) {
             live: r.live, liveAfterGC: r.liveAfterGC,
             loadEventEnd: r.loadEventEnd, wallMs: r.wallMs, rows: r.rows,
             sections: r.sections, peakHeapAtMarks: r.peakHeapAtMarks,
+            features: r.features,
             detachedNodesEstimate: r.detachedNodesEstimate,
         }, '');
     }
@@ -604,7 +641,8 @@ async function main() {
         tiers: TIERS,
         level: LEVEL,
         pairMode: PAIR_MODE,
-        review: process.env.REVIEW === '1',
+        config: ALL_ON ? 'all-on' : 'none',
+        review: ALL_ON || process.env.REVIEW === '1',
         fixtureRoot: FIXTURE_ROOT,
         machine: { platform: os.platform(), arch: os.arch(), cpus: os.cpus().length,
             model: os.cpus()[0]?.model, totalMemBytes: os.totalmem() },

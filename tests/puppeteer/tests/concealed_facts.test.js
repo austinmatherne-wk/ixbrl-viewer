@@ -102,8 +102,8 @@ describe('ixbrl-viewer:', () => {
     });
 
     test('Concealed Fact Test - the .ixbrl-no-highlight filter is ordering dependent', async () => {
-        await viewerPage.beginNavigateToViewer('concealed_facts.zip');
         await probe.install();
+        await viewerPage.beginNavigateToViewer('concealed_facts.zip');
         await viewerPage.waitForLoaderRemoved();
 
         const atBuild = await probe.atFactListBuild();

@@ -21,15 +21,14 @@ export class ConcealmentProbe {
     }
 
     /*
-     * Installs the probe in the page.  Must be called after the report iframe
-     * exists - the viewer creates it, and writes its document, before it starts
-     * walking the report - and before the fact list is built.
+     * Installs the probe so it is present in the next document.  Must be
+     * called before navigation: the stacked drain is fast enough that waiting
+     * for the report iframe loses the ordering observation.
      */
     async install() {
         this.#viewerPage.log('Installing the concealment probe');
-        await this.#viewerPage.page.waitForSelector(
-            'iframe[title="iXBRL document view"]');
-        await this.#viewerPage.page.evaluate(installProbe, this.#caseIds);
+        await this.#viewerPage.page.evaluateOnNewDocument(
+            installProbe, this.#caseIds);
     }
 
     /*
@@ -62,7 +61,7 @@ export class ConcealmentProbe {
 function installProbe(caseIds) {
     const reportDocument = () => {
         const iframe = document.querySelector('iframe[title="iXBRL document view"]');
-        return iframe.contentDocument || iframe.contentWindow.document;
+        return iframe?.contentDocument || iframe?.contentWindow.document;
     };
 
     /* jQuery's ':hidden', which is what htmlHidden() tests. */
@@ -102,19 +101,70 @@ function installProbe(caseIds) {
     };
     window.ixvConcealmentProbe = probe;
 
-    new MutationObserver((records, observer) => {
-        if (document.querySelector('#inspector .facts-by-group .fact-list-item')) {
+    const captureFactList = () => {
+        if (probe.factListBuiltAt === null
+            && document.querySelector('#inspector .facts-by-group .fact-list-item')) {
             probe.factListBuiltAt = performance.now();
             probe.atFactListBuild = snapshot();
-            observer.disconnect();
+            return true;
         }
-    }).observe(document.getElementById('ixv'), { childList: true, subtree: true });
+        return false;
+    };
 
-    new MutationObserver((records, observer) => {
-        if (reportDocument().querySelector('.ixbrl-no-highlight')) {
+    const captureNoHighlight = () => {
+        const doc = reportDocument();
+        if (probe.noHighlightWrittenAt === null
+            && doc?.querySelector('.ixbrl-no-highlight')) {
             probe.noHighlightWrittenAt = performance.now();
-            observer.disconnect();
+            return true;
         }
-    }).observe(reportDocument().documentElement,
-        { attributeFilter: ['class'], subtree: true });
+        return false;
+    };
+
+    let viewerRoot = null;
+    let viewerObserver = null;
+    let reportIframe = null;
+    let reportObserver = null;
+
+    const observeReport = () => {
+        const root = reportDocument()?.documentElement;
+        if (!root) {
+            return;
+        }
+        reportObserver?.disconnect();
+        reportObserver = new MutationObserver((records, observer) => {
+            if (captureNoHighlight()) {
+                observer.disconnect();
+            }
+        });
+        reportObserver.observe(root, { attributeFilter: ['class'], subtree: true });
+        captureNoHighlight();
+    };
+
+    const observeViewer = () => {
+        const root = document.getElementById('ixv');
+        if (root && root !== viewerRoot) {
+            viewerObserver?.disconnect();
+            viewerRoot = root;
+            viewerObserver = new MutationObserver((records, observer) => {
+                if (captureFactList()) {
+                    observer.disconnect();
+                }
+            });
+            viewerObserver.observe(root, { childList: true, subtree: true });
+        }
+        captureFactList();
+
+        const iframe = document.querySelector('iframe[title="iXBRL document view"]');
+        if (iframe && iframe !== reportIframe) {
+            reportIframe = iframe;
+            iframe.addEventListener('load', observeReport);
+            observeReport();
+        }
+        captureNoHighlight();
+    };
+
+    new MutationObserver(observeViewer).observe(
+        document, { childList: true, subtree: true });
+    observeViewer();
 }

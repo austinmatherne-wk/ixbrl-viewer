@@ -39,7 +39,8 @@ With no fixture arguments every directory under `FIXTURE_ROOT` holding a
 | `RUNS` | `5` | runs per (fixture, tier, arm). 5 is the map's evidence bar. |
 | `TIERS` | `1,4` | CPU throttle tiers. A phase that does not scale with the tier is not CPU-bound. |
 | `LEVEL` | `phase` | `phase`, `deep` or `off` — see below. |
-| `REVIEW` | — | `1` loads with `?review=1`, so the untagged-numbers phase runs. |
+| `ALL_ON` | — | `1` is **all-on**: `?review=1&search_on_startup=1&highlight_facts_on_startup=1`. Unset is **none** (no feature params). `CONFIG=all-on` is an alias. Do not also set `REVIEW`. Do not encode this as `ABLATE_ARMS` (mutually exclusive with `CONTROL`). |
+| `REVIEW` | — | `1` loads with `?review=1` only. Not a campaign config; all-on is `ALL_ON=1`. |
 | `CONTROL` | — | path to a second checkout with a built `dist/`, measured as a paired arm on `PORT+1`. |
 | `CONTROL_INSTRUMENTED` | — | `1` if the control build also has `perf.js`. |
 | `PAIR_MODE` | — | `1` groups fixtures by their manifest's `pair` field and alternates the inline/stub order AB/BA. |
@@ -48,6 +49,10 @@ With no fixture arguments every directory under `FIXTURE_ROOT` holding a
 | `PORT` | `8910` | first port; loopback only, deliberately. |
 | `OUT` | `perf-harness/out/phases-<stamp>.json` | machine-readable output. |
 | `HEADFUL` | — | `1` for a visible browser. Debugging only; it changes the timings. |
+
+**none** and **all-on** are two process invocations of the same `CONTROL` pair
+(`ALL_ON` unset vs `ALL_ON=1`), not query-string arms in one process.
+`ABLATE_ARMS` is mutually exclusive with `CONTROL`.
 
 ## Paired fixture formats
 

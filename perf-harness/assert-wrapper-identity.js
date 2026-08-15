@@ -4,6 +4,14 @@
 //     FIXTURE_ROOT=/path/to/.scratch/startup-slowness \
 //     node perf-harness/assert-wrapper-identity.js [slug ...]
 //
+//   ALL_ON=1 ABLATE_ARMS=none,none \
+//     FIXTURE_ROOT=/path/to/fixtures \
+//     node perf-harness/assert-wrapper-identity.js [slug ...]
+//
+//   ALL_ON=1 MUTANT_HIGHLIGHT=skip ABLATE_ARMS=none,none \
+//     FIXTURE_ROOT=/path/to/fixtures \
+//     node perf-harness/assert-wrapper-identity.js [slug ...]
+//
 // measure-phases.js proves an arm is fast and that its volume counters match.
 // Neither is the same as proving the arm produced the same document, and ticket
 // 02's correctness bar is "byte-identical output ... assert it, don't eyeball it".
@@ -69,6 +77,27 @@
 //             identity would report a difference that is not observable.  Deleting
 //             a text node, splitting one, or leaving a tail unappended all move it.
 //
+// ALL_ON=1 (alias CONFIG=all-on) is the campaign all-on config: the same three
+// query params measure-phases.js pushes.  It also takes the review signature
+// (review wrapping is on).  The highlight signature is always taken so a none
+// run can prove those classes are absent (n=0).  Kept apart from signatures()
+// so none-config `dom` / `wrapper` / `continuation*` hashes stay exactly what
+// they were.  `dom` filters the four wrapper classes and is blind to
+// `ixbrl-highlight*`.  `classAttr` is the raw attribute of those same
+// elements, so once highlight-all has run it is a side channel — not a named
+// check, and silent for a highlight class that landed off the four-class set.
+//
+//   highlight every element carrying `ixbrl-highlight` or `ixbrl-highlight-N`
+//             (N a digit string), as "<element index>:<sorted highlight classes>".
+//             Startup highlight-all writes both: the base class on every
+//             `.ixbrl-element`, the numbered class on primary wrappers for a
+//             namespace group.  A skipped highlight-all or a renamed class
+//             moves this hash.  `MUTANT_HIGHLIGHT=skip` omits
+//             `highlight_facts_on_startup` on arms after the first (review and
+//             search stay on).  `MUTANT_HIGHLIGHT=rename` loads all-on fully,
+//             then rewrites `ixbrl-highlight*` to `ixbrl-hl` on later arms
+//             before signing.
+//
 // Exit status is 1 if any arm's signature differs from the first arm's, so this
 // is usable as a gate rather than something to read.
 const { spawn } = require('child_process');
@@ -81,6 +110,9 @@ const FIXTURE_ROOT = process.env.FIXTURE_ROOT || path.join(REPO, '.scratch', 'st
 const BUNDLE = path.join('iXBRLViewerPlugin', 'viewer', 'dist', 'ixbrlviewer.dev.js');
 const ARMS = (process.env.ABLATE_ARMS || 'none,batchedordered').split(',');
 const PORT = Number(process.env.PORT || 8930);
+const ALL_ON = process.env.ALL_ON === '1' || process.env.CONFIG === 'all-on';
+const REVIEW = ALL_ON || process.env.REVIEW === '1';
+const MUTANT_HIGHLIGHT = process.env.MUTANT_HIGHLIGHT || '';
 
 const NODE_MODULES = [
     path.join(REPO, 'node_modules'),
@@ -245,6 +277,76 @@ async function reviewSignature() {
 }
 
 /*
+ * Runs in-page, after signatures().  The all-on highlight signature: the classes
+ * highlightAllTags writes onto the report documents.  Kept apart from
+ * signatures() so none-config `dom` stays the four wrapper classes.
+ *
+ * The element index is rebuilt here rather than shared, same reason as
+ * reviewSignature(): this is its own page.evaluate and the walk is identical.
+ */
+async function highlightSignature() {
+    const docs = [document, ...[...document.querySelectorAll('iframe')].map(f => f.contentDocument)];
+    const classParts = [];
+    let next = 0;
+    let highlightElements = 0;
+    let highlightBase = 0;
+    let highlightColored = 0;
+    for (const doc of docs) {
+        if (doc === null) {
+            continue;
+        }
+        for (const el of doc.getElementsByTagName('*')) {
+            const i = next++;
+            const on = [...el.classList]
+                .filter(c => c === 'ixbrl-highlight' || /^ixbrl-highlight-\d+$/.test(c))
+                .sort();
+            if (on.length) {
+                highlightElements++;
+                if (on.includes('ixbrl-highlight')) {
+                    highlightBase++;
+                }
+                highlightColored += on.filter(c => /^ixbrl-highlight-\d+$/.test(c)).length;
+                classParts.push(`${i}:${on.join(',')}`);
+            }
+        }
+    }
+    const hash = async (s) => {
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+        return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+    };
+    return {
+        highlightElements,
+        highlightBase,
+        highlightColored,
+        highlightHash: await hash(classParts.join('|')),
+    };
+}
+
+function renameHighlightClassesInPage() {
+    const docs = [document, ...[...document.querySelectorAll('iframe')].map(f => f.contentDocument)];
+    let renamed = 0;
+    for (const doc of docs) {
+        if (doc === null) {
+            continue;
+        }
+        for (const el of doc.getElementsByTagName('*')) {
+            const prev = [...el.classList];
+            const next = prev.map(c => {
+                if (c === 'ixbrl-highlight' || /^ixbrl-highlight-\d+$/.test(c)) {
+                    renamed++;
+                    return 'ixbrl-hl';
+                }
+                return c;
+            });
+            if (next.some((c, i) => c !== prev[i])) {
+                el.className = next.join(' ');
+            }
+        }
+    }
+    return renamed;
+}
+
+/*
  * Runs in-page, after signatures().  Shows everything a deferred row tag could
  * be waiting on, then signs the rows.  Clicking the real controls rather than
  * calling the inspector directly keeps this a test of what a user's two clicks
@@ -310,9 +412,20 @@ async function main() {
         const mb = (fx.source_bytes + (fx.stub_bytes ?? 0)) / 1e6;
         const timeout = Math.min(1_800_000, Math.round(60_000 + mb * 4_000));
         const byArm = {};
-        for (const armName of ARMS) {
+        const armKeys = ARMS.map((name, i) => (
+            ARMS.filter(a => a === name).length > 1 ? `${i}:${name}` : name
+        ));
+        for (const [i, armName] of ARMS.entries()) {
+            const armKey = armKeys[i];
+            const isMutantArm = Boolean(MUTANT_HIGHLIGHT) && i > 0;
             const params = ['ixvperf=phase', 'ixvexpose=1'];
-            if (process.env.REVIEW === '1') {
+            if (ALL_ON) {
+                params.push('review=1', 'search_on_startup=1');
+                if (!(isMutantArm && MUTANT_HIGHLIGHT === 'skip')) {
+                    params.push('highlight_facts_on_startup=1');
+                }
+            }
+            else if (REVIEW) {
                 params.push('review=1');
             }
             if (armName !== 'none') {
@@ -320,37 +433,44 @@ async function main() {
             }
             const page = await browser.newPage();
             const url = `http://127.0.0.1:${PORT}/${fx.slug}/${fx.entry}?${params.join('&')}`;
-            process.stderr.write(`${fx.slug} ${armName} ... `);
+            process.stderr.write(`${fx.slug} ${armKey} ... `);
             await page.goto(url, { waitUntil: 'load', timeout });
             await page.waitForFunction(() => window.IXVPERF?.done === true, { timeout, polling: 250 });
-            byArm[armName] = await page.evaluate(signatures);
-            if (process.env.REVIEW === '1') {
-                Object.assign(byArm[armName], await page.evaluate(reviewSignature));
+            if (isMutantArm && MUTANT_HIGHLIGHT === 'rename') {
+                await page.evaluate(renameHighlightClassesInPage);
+            }
+            byArm[armKey] = await page.evaluate(signatures);
+            Object.assign(byArm[armKey], await page.evaluate(highlightSignature));
+            if (REVIEW) {
+                Object.assign(byArm[armKey], await page.evaluate(reviewSignature));
             }
             if (process.env.INSPECTOR_ROWS === '1') {
-                Object.assign(byArm[armName], await page.evaluate(inspectorRowSignature));
+                Object.assign(byArm[armKey], await page.evaluate(inspectorRowSignature));
             }
-            process.stderr.write(`dom=${byArm[armName].domHash} classAttr=${byArm[armName].classAttrHash} `
-                + `wrapper=${byArm[armName].wrapperHash} `
-                + `continuations=${byArm[armName].continuationItemsHash}/${byArm[armName].continuationOfHash}`
-                + (byArm[armName].reviewTextHash
-                    ? ` review=${byArm[armName].reviewClassHash} text=${byArm[armName].reviewTextHash}` : '')
-                + (byArm[armName].rowsHash ? ` rows=${byArm[armName].rowsHash}` : '') + `\n`);
+            process.stderr.write(`dom=${byArm[armKey].domHash} classAttr=${byArm[armKey].classAttrHash} `
+                + `wrapper=${byArm[armKey].wrapperHash} `
+                + `continuations=${byArm[armKey].continuationItemsHash}/${byArm[armKey].continuationOfHash}`
+                + (byArm[armKey].highlightHash
+                    ? ` highlight=${byArm[armKey].highlightHash} n=${byArm[armKey].highlightElements}` : '')
+                + (byArm[armKey].reviewTextHash
+                    ? ` review=${byArm[armKey].reviewClassHash} text=${byArm[armKey].reviewTextHash}` : '')
+                + (byArm[armKey].rowsHash ? ` rows=${byArm[armKey].rowsHash}` : '') + `\n`);
             await page.close();
         }
-        const base = byArm[ARMS[0]];
-        for (const armName of ARMS.slice(1)) {
-            const s = byArm[armName];
+        const base = byArm[armKeys[0]];
+        for (const armKey of armKeys.slice(1)) {
+            const s = byArm[armKey];
             const diffs = Object.keys(base).filter(k => JSON.stringify(base[k]) !== JSON.stringify(s[k]));
             if (diffs.length) {
                 failures++;
-                console.log(`FAIL ${fx.slug} ${ARMS[0]} vs ${armName}: ${diffs.map(
+                console.log(`FAIL ${fx.slug} ${armKeys[0]} vs ${armKey}: ${diffs.map(
                     k => `${k} ${JSON.stringify(base[k])} != ${JSON.stringify(s[k])}`).join('; ')}`);
             }
             else {
-                console.log(`ok   ${fx.slug} ${ARMS[0]} vs ${armName}  `
+                console.log(`ok   ${fx.slug} ${armKeys[0]} vs ${armKey}  `
                     + `elements=${s.elements} classed=${s.classedElements} facts=${s.facts} `
-                    + `wrapperNodes=${s.wrapperNodes} rows=${s.rows} sections=${s.sections}`);
+                    + `wrapperNodes=${s.wrapperNodes} rows=${s.rows} sections=${s.sections}`
+                    + (s.highlightElements !== undefined ? ` highlight=${s.highlightElements}` : ''));
             }
         }
         report.push({ slug: fx.slug, arms: byArm });
@@ -361,7 +481,9 @@ async function main() {
     fs.rmSync(root, { recursive: true, force: true });
     if (process.env.OUT) {
         fs.mkdirSync(path.dirname(process.env.OUT), { recursive: true });
-        fs.writeFileSync(process.env.OUT, JSON.stringify({ arms: ARMS, report }, null, 1));
+        fs.writeFileSync(process.env.OUT, JSON.stringify({
+            arms: ARMS, allOn: ALL_ON, mutant: MUTANT_HIGHLIGHT || null, report,
+        }, null, 1));
     }
     console.log(failures ? `\n${failures} MISMATCH(ES)` : `\nall ${all.length} fixtures identical across ${ARMS.join(', ')}`);
     process.exit(failures ? 1 : 0);

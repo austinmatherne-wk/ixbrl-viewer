@@ -54,6 +54,12 @@ With no fixture arguments every directory under `FIXTURE_ROOT` holding a
 (`ALL_ON` unset vs `ALL_ON=1`), not query-string arms in one process.
 `ABLATE_ARMS` is mutually exclusive with `CONTROL`.
 
+`assert-wrapper-identity.js` honours the same `ALL_ON` env. Under all-on it
+takes a dedicated `ixbrl-highlight` / `ixbrl-highlight-N` signature (and the
+review text-node signature). `MUTANT_HIGHLIGHT=skip` or `rename` is the
+can-fail proof that that signature is not vacuously green. Inspector DOM stays
+behind `INSPECTOR_ROWS=1`.
+
 ## Paired fixture formats
 
 Ticket 31 adds a second pairing axis. With `PAIR_MODE=1`, every fixture must

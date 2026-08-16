@@ -1290,7 +1290,20 @@ export class Viewer {
          * each() added classes to every wrapper (and re-applied the chain's
          * color for each of them), which on Tryg restyles against a 53 MB
          * stylesheet tens of thousands of times during inspectorPre.  CSS
-         * already paints .ixbrl-sub-element descendants from the primary. */
+         * already paints .ixbrl-sub-element descendants from the primary.
+         *
+         * Review mode already flattens namespace colors to the default, so
+         * all-on startup only toggles .ixbrl-highlight-all on the report body
+         * (one class mutation) instead of classing every primary wrapper. */
+        this._iframes.each((_, iframe) => {
+            const body = iframe.contentDocument?.body;
+            if (body) {
+                body.classList.toggle("ixbrl-highlight-all", !!on);
+            }
+        });
+        if (on && this._iv?.isReviewModeEnabled?.()) {
+            return;
+        }
         const groups = {};
         for (let i = 0; i < namespaceGroups.length; i++) {
             groups[namespaceGroups[i]] = i % HIGHLIGHT_COLORS;

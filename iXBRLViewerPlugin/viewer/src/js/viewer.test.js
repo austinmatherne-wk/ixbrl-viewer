@@ -425,4 +425,27 @@ describe("highlightAllTags", () => {
         expect(el.classList.contains("ixbrl-highlight")).toBe(false);
         expect([...el.classList].some(c => c.startsWith("ixbrl-highlight"))).toBe(false);
     });
+
+    test("review mode only toggles an ancestor class on the report body", () => {
+        const f1 = viewerUniqueId(0, "f1");
+        const iframe = document.createElement("iframe");
+        document.body.appendChild(iframe);
+        const doc = iframe.contentDocument;
+        const a = appendHighlightWrapper(doc);
+        const ixNodeMap = { [f1]: new IXNode(f1, $(a), 0) };
+        const reportSet = new ReportSet(highlightReportData({ f1: highlightFact("eg:Concept1") }));
+        reportSet.setIXNodeMap(ixNodeMap);
+        const v = new Viewer(
+            { options: {}, isReviewModeEnabled: () => true },
+            $(iframe),
+            reportSet
+        );
+        v._ixNodeMap = ixNodeMap;
+        v.continuationOfMap = {};
+        v.highlightAllTags(true, v._reportSet.namespaceGroups());
+        expect(doc.body.classList.contains("ixbrl-highlight-all")).toBe(true);
+        expect(a.classList.contains("ixbrl-highlight")).toBe(false);
+        v.highlightAllTags(false, v._reportSet.namespaceGroups());
+        expect(doc.body.classList.contains("ixbrl-highlight-all")).toBe(false);
+    });
 });

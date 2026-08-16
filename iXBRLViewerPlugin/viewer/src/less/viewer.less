@@ -55,6 +55,16 @@
   }
 }
 
+// Review-mode highlight-all: one class on the report body.  Namespace colors
+// are already flattened to the default in review, so per-element ixbrl-highlight
+// classes are wasted work (67k mutations on Principal).
+.ixbrl-highlight-all {
+  .ixbrl-element:not(.ixbrl-no-highlight),
+  .ixbrl-sub-element:not(.ixbrl-no-highlight) {
+    background-color: var(--colour-highlight-default) !important;
+  }
+}
+
 .review.review-highlight-untagged-numbers .review-untagged-number {
   background-color: var(--colour-highlight-1);
 }

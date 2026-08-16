@@ -137,7 +137,7 @@ describe('ixbrl-viewer:', () => {
     test('Highlight Test - Review', async () => {
         await viewerPage.navigateToViewer('highlights.zip', '?review=true');
 
-        // Assert on load values are not highlighted
+        // Background preparation creates inactive untagged highlights after load.
         await viewerPage.docFrame.assertHighlights([
             ...inactiveReviewFactHighlights,
             ...inactiveUntaggedDateHighlights,

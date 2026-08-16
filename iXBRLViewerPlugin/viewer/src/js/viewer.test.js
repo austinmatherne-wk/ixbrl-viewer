@@ -271,6 +271,51 @@ describe("highlightAllTags", () => {
     });
 });
 
+describe("untagged number wrapping", () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => {
+        jest.useRealTimers();
+        document.body.innerHTML = "";
+    });
+
+    test("starts cooperatively after load in review mode", () => {
+        const { viewer } = makeHighlightViewer(true);
+        const startUntaggedNumbersWrapping = jest.spyOn(viewer, "startUntaggedNumbersWrapping");
+
+        viewer.postLoadAsync();
+
+        expect(startUntaggedNumbersWrapping).toHaveBeenCalledTimes(1);
+    });
+
+    test("wraps the document across multiple tasks", () => {
+        const { viewer, doc } = makeHighlightViewer(true);
+        for (let i = 0; i < 101; i++) {
+            const element = doc.createElement("span");
+            element.textContent = "123";
+            doc.body.appendChild(element);
+        }
+
+        viewer.startUntaggedNumbersWrapping();
+
+        expect(doc.querySelectorAll(".review-untagged-number")).toHaveLength(0);
+        jest.advanceTimersToNextTimer();
+        expect(doc.querySelectorAll(".review-untagged-number").length).toBeGreaterThan(0);
+        expect(doc.querySelectorAll(".review-untagged-number").length).toBeLessThan(101);
+
+        jest.runAllTimers();
+        expect(doc.querySelectorAll(".review-untagged-number")).toHaveLength(101);
+    });
+
+    test("does not start outside review mode", () => {
+        const { viewer } = makeHighlightViewer(false);
+        const wrapAllUntaggedNumbers = jest.spyOn(viewer, "_wrapAllUntaggedNumbers");
+
+        viewer.startUntaggedNumbersWrapping();
+
+        expect(wrapAllUntaggedNumbers).not.toHaveBeenCalled();
+    });
+});
+
 describe("_findOrCreateWrapperNode", () => {
     afterEach(() => {
         document.body.innerHTML = "";

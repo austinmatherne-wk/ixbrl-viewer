@@ -10,6 +10,8 @@ import { MessageBox } from './messagebox.js';
 
 export class DocumentTooLargeError extends Error {}
 
+const UNTAGGED_WRAP_BATCH_SIZE = 100;
+
 function localName(e) {
     if (e.indexOf(':') == -1) {
         return e
@@ -77,18 +79,7 @@ export class Viewer {
                             const body = $(iframe).contents().find("body").get(0);
                             await viewer._iv.pluginPromise('preProcessiXBRL', body, docIndex);
                             if (viewer._iv.isReviewModeEnabled()) {
-                                await new Promise((resolve, _) => {
-                                    viewer._iv.setProgress("Finding untagged numbers and dates").then(() => {
-                                        // Temporarily hide all children of "body" to avoid constant
-                                        // re-layouts when wrapping untagged numbers
-                                        const children = $(body).children(':visible');
-                                        children.hide();
-                                        $(body).addClass("review");
-                                        viewer._wrapUntaggedNumbers($(body), docIndex, false);
-                                        children.show();
-                                        resolve();
-                                    });
-                                });
+                                $(body).addClass("review");
                             }
                         }
                     })()
@@ -104,6 +95,20 @@ export class Viewer {
                 })
                 .catch(err => reject(err));
         });
+    }
+
+    startUntaggedNumbersWrapping() {
+        if (!this._iv.isReviewModeEnabled()) {
+            return;
+        }
+        runGenerator(this._wrapAllUntaggedNumbers());
+    }
+
+    * _wrapAllUntaggedNumbers() {
+        for (const [docIndex, iframe] of this._iframes.toArray().entries()) {
+            const body = $(iframe).contents().find("body");
+            yield* this._wrapUntaggedNumbersIncrementally(body, docIndex, false);
+        }
     }
 
     _addDocumentSetTabs() {
@@ -168,13 +173,21 @@ export class Viewer {
     }
 
 
-    _wrapUntaggedNumbers(n, docIndex, ignoreFullMatch) {
-        const viewer = this;
+    * _wrapUntaggedNumbersIncrementally(n, docIndex, ignoreFullMatch) {
         const ixHiddenStyleRE = /(?:^|\s|;)-(?:sec|esef)-ix-hidden:\s*([^\s;]+)/;
+        const pending = n.contents().get().reverse().map(node => ({
+            node,
+            ignoreFullMatch,
+        }));
+        let processed = 0;
 
-        n.contents().each(function () {
-            if (this.nodeType === Node.ELEMENT_NODE) {
-                const name = localName(this.nodeName.toUpperCase());
+        while (pending.length > 0) {
+            const {
+                node,
+                ignoreFullMatch: ignoreNodeFullMatch,
+            } = pending.pop();
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                const name = localName(node.nodeName.toUpperCase());
                 /*
                  * Content in text tags should not be considered tagged, so carry
                  * on searching if it's not:
@@ -191,14 +204,20 @@ export class Viewer {
                  */
                 if (!(
                         name === 'NONFRACTION' ||
-                        (name === 'NONNUMERIC' && this.getAttribute('format') !== null) ||
-                        (this.hasAttribute('style') && this.getAttribute('style').match(ixHiddenStyleRE))
+                        (name === 'NONNUMERIC' && node.getAttribute('format') !== null) ||
+                        (node.hasAttribute('style') && node.getAttribute('style').match(ixHiddenStyleRE))
                 )) {
-                    viewer._wrapUntaggedNumbers($(this), docIndex, name === 'NONNUMERIC');
+                    const childIgnoreFullMatch = name === 'NONNUMERIC';
+                    for (const child of Array.from(node.childNodes).reverse()) {
+                        pending.push({
+                            node: child,
+                            ignoreFullMatch: childIgnoreFullMatch,
+                        });
+                    }
                 }
             }
-            else if (this.nodeType === Node.TEXT_NODE) {
-                const input = this.nodeValue;
+            else if (node.nodeType === Node.TEXT_NODE) {
+                const input = node.nodeValue;
                 const output = $("<div></div>");
                 let pos = 0;
                 numberMatchSearch(input, function (m, do_not_want, is_date) {
@@ -208,7 +227,7 @@ export class Viewer {
                     // If "ignoreFullMatch" is specified, we ignore a match which
                     // covers the whole of n's text content.
                     if (do_not_want ||
-                            (ignoreFullMatch && m.index === 0 && m.index + m[0].length === input.length && input === n.text())) {
+                            (ignoreNodeFullMatch && m.index === 0 && m.index + m[0].length === input.length && input === $(node.parentNode).text())) {
                         output.append(document.createTextNode(m[0]));
                     }
                     else {
@@ -223,9 +242,18 @@ export class Viewer {
                 if (pos < input.length) {
                     output.append(document.createTextNode(input.substring(pos, input.length)));
                 }
-                $(this).replaceWith(output.contents());
+                $(node).replaceWith(output.contents());
             }
-        });
+            processed++;
+            if (processed % UNTAGGED_WRAP_BATCH_SIZE === 0) {
+                yield;
+            }
+        }
+    }
+
+    _wrapUntaggedNumbers(n, docIndex, ignoreFullMatch) {
+        const generator = this._wrapUntaggedNumbersIncrementally(n, docIndex, ignoreFullMatch);
+        while (!generator.next().done) {}
     }
 
     /*
@@ -935,6 +963,7 @@ export class Viewer {
 
     postLoadAsync() {
         runGenerator(this.postProcess(), () => this.postProcessingComplete());
+        this.startUntaggedNumbersWrapping();
     }
 
     postProcessingComplete() {

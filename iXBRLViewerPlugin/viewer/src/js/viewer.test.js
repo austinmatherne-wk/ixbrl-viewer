@@ -2,6 +2,9 @@
 
 import $ from 'jquery'
 import { Viewer } from "./viewer.js";
+import { IXNode } from "./ixnode.js";
+import { ReportSet } from "./reportset.js";
+import { NAMESPACE_ISO4217, viewerUniqueId } from "./util.js";
 
 /*
  * _findOrCreateWrapperNode resolves computed style for every descendant of every
@@ -251,5 +254,175 @@ describe("Viewer.postProcess", () => {
 
         expect([...doc.querySelectorAll('.ixbrl-no-highlight')].map(e => e.id))
             .toEqual(['block1', 'block2']);
+    });
+});
+
+function highlightReportData(facts) {
+    return {
+        prefixes: {
+            eg: "http://www.example.com",
+            other: "http://other.example.com",
+            iso4217: NAMESPACE_ISO4217,
+            e: "http://example.com/entity",
+        },
+        concepts: {
+            "eg:Concept1": { labels: { std: { en: "A" } } },
+            "other:Concept2": { labels: { std: { en: "B" } } },
+        },
+        facts,
+        languages: {},
+        roles: {},
+        roleDefs: {},
+        rels: {},
+    };
+}
+
+function highlightFact(concept) {
+    return {
+        v: 1,
+        a: {
+            c: concept,
+            u: "iso4217:USD",
+            p: "2017-01-01/2018-01-01",
+        },
+    };
+}
+
+function appendHighlightWrapper(doc, className = "ixbrl-element") {
+    const el = doc.createElement("span");
+    el.className = className;
+    doc.body.appendChild(el);
+    return el;
+}
+
+function makeHighlightViewer(facts, buildNodes) {
+    const iframe = document.createElement("iframe");
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument;
+    const ixNodeMap = buildNodes(doc);
+    const reportSet = new ReportSet(highlightReportData(facts));
+    reportSet.setIXNodeMap(ixNodeMap);
+    const highlightViewer = new Viewer({ options: {} }, $(iframe), reportSet);
+    highlightViewer._ixNodeMap = ixNodeMap;
+    highlightViewer.continuationOfMap = highlightViewer.continuationOfMap || {};
+    return { viewer: highlightViewer, doc };
+}
+
+describe("highlightAllTags", () => {
+    afterEach(() => {
+        document.body.innerHTML = "";
+    });
+
+    test("classes primary wrappers of unique facts with the namespace color", () => {
+        const f1 = viewerUniqueId(0, "f1");
+        const f2 = viewerUniqueId(0, "f2");
+        const { viewer: v, doc } = makeHighlightViewer(
+            { f1: highlightFact("eg:Concept1"), f2: highlightFact("other:Concept2") },
+            (d) => {
+                const a = appendHighlightWrapper(d);
+                const b = appendHighlightWrapper(d);
+                return {
+                    [f1]: new IXNode(f1, $(a), 0),
+                    [f2]: new IXNode(f2, $(b), 0),
+                };
+            }
+        );
+        v.highlightAllTags(true, v._reportSet.namespaceGroups());
+
+        const els = [...doc.querySelectorAll(".ixbrl-element")];
+        expect(els[0].classList.contains("ixbrl-highlight")).toBe(true);
+        expect(els[1].classList.contains("ixbrl-highlight")).toBe(true);
+        expect(els[0].classList.contains("ixbrl-highlight-0")).toBe(true);
+        expect(els[1].classList.contains("ixbrl-highlight-1")).toBe(true);
+    });
+
+    test("does not class an orphan ixbrl-element that is not a fact wrapper", () => {
+        const f1 = viewerUniqueId(0, "f1");
+        const { viewer: v, doc } = makeHighlightViewer(
+            { f1: highlightFact("eg:Concept1") },
+            (d) => {
+                const a = appendHighlightWrapper(d);
+                appendHighlightWrapper(d);
+                return { [f1]: new IXNode(f1, $(a), 0) };
+            }
+        );
+        v.highlightAllTags(true, v._reportSet.namespaceGroups());
+        const els = [...doc.querySelectorAll(".ixbrl-element")];
+        expect(els[0].classList.contains("ixbrl-highlight")).toBe(true);
+        expect(els[1].classList.contains("ixbrl-highlight")).toBe(false);
+    });
+
+    test("classes continuation primaries with the head fact's color", () => {
+        const f1 = viewerUniqueId(0, "f1");
+        const c1 = viewerUniqueId(0, "c1");
+        const { viewer: v, doc } = makeHighlightViewer(
+            { f1: highlightFact("eg:Concept1") },
+            (d) => {
+                const head = appendHighlightWrapper(d);
+                const cont = appendHighlightWrapper(d);
+                const headIxn = new IXNode(f1, $(head), 0);
+                const contIxn = new IXNode(c1, $(cont), 0);
+                headIxn.continuations = [contIxn];
+                return { [f1]: headIxn, [c1]: contIxn };
+            }
+        );
+        v.continuationOfMap = { [c1]: f1 };
+        v.highlightAllTags(true, v._reportSet.namespaceGroups());
+        const els = [...doc.querySelectorAll(".ixbrl-element")];
+        expect(els[0].classList.contains("ixbrl-highlight-0")).toBe(true);
+        expect(els[1].classList.contains("ixbrl-highlight")).toBe(true);
+        expect(els[1].classList.contains("ixbrl-highlight-0")).toBe(true);
+    });
+
+    test("does not class a sub-element that is not an ixbrl-element", () => {
+        const f1 = viewerUniqueId(0, "f1");
+        const { viewer: v, doc } = makeHighlightViewer(
+            { f1: highlightFact("eg:Concept1") },
+            (d) => {
+                const primary = appendHighlightWrapper(d);
+                const sub = appendHighlightWrapper(d, "ixbrl-sub-element");
+                return { [f1]: new IXNode(f1, $(primary).add(sub), 0) };
+            }
+        );
+        v.highlightAllTags(true, v._reportSet.namespaceGroups());
+        expect(doc.querySelector(".ixbrl-element").classList.contains("ixbrl-highlight")).toBe(true);
+        expect(doc.querySelector(".ixbrl-sub-element").classList.contains("ixbrl-highlight")).toBe(false);
+    });
+
+    test("keeps the first fact's color on a double-tagged wrapper", () => {
+        const f1 = viewerUniqueId(0, "f1");
+        const f2 = viewerUniqueId(0, "f2");
+        const { viewer: v, doc } = makeHighlightViewer(
+            { f1: highlightFact("eg:Concept1"), f2: highlightFact("other:Concept2") },
+            (d) => {
+                const shared = appendHighlightWrapper(d);
+                const $shared = $(shared);
+                return {
+                    [f1]: new IXNode(f1, $shared, 0),
+                    [f2]: new IXNode(f2, $shared, 0),
+                };
+            }
+        );
+        v.highlightAllTags(true, v._reportSet.namespaceGroups());
+        const el = doc.querySelector(".ixbrl-element");
+        expect(el.classList.contains("ixbrl-highlight-0")).toBe(true);
+        expect(el.classList.contains("ixbrl-highlight-1")).toBe(false);
+    });
+
+    test("removes highlight classes when toggled off", () => {
+        const f1 = viewerUniqueId(0, "f1");
+        const { viewer: v, doc } = makeHighlightViewer(
+            { f1: highlightFact("eg:Concept1") },
+            (d) => {
+                const a = appendHighlightWrapper(d);
+                return { [f1]: new IXNode(f1, $(a), 0) };
+            }
+        );
+        const groups = v._reportSet.namespaceGroups();
+        v.highlightAllTags(true, groups);
+        v.highlightAllTags(false, groups);
+        const el = doc.querySelector(".ixbrl-element");
+        expect(el.classList.contains("ixbrl-highlight")).toBe(false);
+        expect([...el.classList].some(c => c.startsWith("ixbrl-highlight"))).toBe(false);
     });
 });

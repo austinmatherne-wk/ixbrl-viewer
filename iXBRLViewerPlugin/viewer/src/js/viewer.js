@@ -1286,37 +1286,85 @@ export class Viewer {
     }
 
     highlightAllTags(on, namespaceGroups) {
+        /* Walk unique IX nodes, not every .ixbrl-element.  The previous jQuery
+         * each() added classes to every wrapper (and re-applied the chain's
+         * color for each of them), which on Tryg restyles against a 53 MB
+         * stylesheet tens of thousands of times during inspectorPre.  CSS
+         * already paints .ixbrl-sub-element descendants from the primary. */
         const groups = {};
-        $.each(namespaceGroups, function (i, ns) {
-            groups[ns] = i % HIGHLIGHT_COLORS;
-        });
-        const reportSet = this._reportSet;
-        const viewer = this;
+        for (let i = 0; i < namespaceGroups.length; i++) {
+            groups[namespaceGroups[i]] = i % HIGHLIGHT_COLORS;
+        }
         if (on) {
-            $(".ixbrl-element", this._contents)
-                .addClass("ixbrl-highlight")
-                .each(function () {
-                    // Find the first ixn for this element that isn't a footnote.
-                    // Choosing the first means that we're arbitrarily choosing a
-                    // highlight color for an element that is double tagged in a
-                    // table cell.
-                    const ixn = $(this).data('ivids').map(id => viewer._ixNodeMap[id]).filter(ixn => !ixn.footnote)[0];
-                    if (ixn !== undefined ) {
-                        const item = reportSet.getItemById(ixn.id);
-                        if (item !== undefined) {
-                            const elements = viewer.primaryElementsForItemIds(ixn.chainIXIds());
-                            const i = groups[item.conceptQName().prefix];
-                            if (i !== undefined) {
-                                elements.addClass("ixbrl-highlight-" + i);
-                            }
-                        }
+            const seen = new Set();
+            for (const [vuid, ixn] of Object.entries(this._ixNodeMap)) {
+                if (this.continuationOfMap?.[vuid] !== undefined) {
+                    continue;
+                }
+                const color = ixn.footnote
+                    ? undefined
+                    : this._namespaceHighlightColor(ixn, groups);
+                for (const id of ixn.chainIXIds()) {
+                    if (seen.has(id)) {
+                        continue;
                     }
-            });
+                    seen.add(id);
+                    const chainIxn = this._ixNodeMap[id];
+                    if (chainIxn !== undefined) {
+                        this._highlightPrimaryWrappers(chainIxn, color);
+                    }
+                }
+            }
         }
         else {
-            $(".ixbrl-element", this._contents).removeClass(
-                (i, className) => (className.match (/(^|\s)ixbrl-highlight\S*/g) || []).join(' ')
-            );
+            this._iframes.each((_, iframe) => {
+                const doc = iframe.contentDocument;
+                if (!doc) {
+                    return;
+                }
+                for (const el of doc.querySelectorAll(".ixbrl-element")) {
+                    const toRemove = [];
+                    for (const cls of el.classList) {
+                        if (cls.startsWith("ixbrl-highlight")) {
+                            toRemove.push(cls);
+                        }
+                    }
+                    if (toRemove.length > 0) {
+                        el.classList.remove(...toRemove);
+                    }
+                }
+            });
+        }
+    }
+
+    _namespaceHighlightColor(ixn, groups) {
+        const item = this._reportSet.getItemById(ixn.id);
+        if (item === undefined) {
+            return undefined;
+        }
+        return groups[item.conceptQName().prefix];
+    }
+
+    _hasNamespaceHighlight(el) {
+        for (let i = 0; i < HIGHLIGHT_COLORS; i++) {
+            if (el.classList.contains("ixbrl-highlight-" + i)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    _highlightPrimaryWrappers(ixn, color) {
+        const wrappers = ixn.wrapperNodes;
+        if (!wrappers) {
+            return;
+        }
+        const els = wrappers.filter(".ixbrl-element").get();
+        for (const el of els) {
+            el.classList.add("ixbrl-highlight");
+            if (color !== undefined && !this._hasNamespaceHighlight(el)) {
+                el.classList.add("ixbrl-highlight-" + color);
+            }
         }
     }
 

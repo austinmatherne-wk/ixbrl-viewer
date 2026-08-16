@@ -807,6 +807,7 @@ export class Inspector {
     }
 
     toggleHighlightUntaggedNumbers() {
+        this._viewer.ensureUntaggedNumbersWrapped();
         const control = $("#highlight-untagged-numbers")
         control.toggleClass("checked");
         const body = this._viewer.contents().find("body");
@@ -819,6 +820,7 @@ export class Inspector {
     }
 
     toggleHighlightUntaggedDates() {
+        this._viewer.ensureUntaggedNumbersWrapped();
         const control = $("#highlight-untagged-dates")
         control.toggleClass("checked");
         const body = this._viewer.contents().find("body");

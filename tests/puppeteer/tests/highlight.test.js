@@ -137,11 +137,10 @@ describe('ixbrl-viewer:', () => {
     test('Highlight Test - Review', async () => {
         await viewerPage.navigateToViewer('highlights.zip', '?review=true');
 
-        // Assert on load values are not highlighted
+        // Assert on load values are not highlighted. Untagged wrap spans are
+        // not in the report document until the first highlight-untagged click.
         await viewerPage.docFrame.assertHighlights([
             ...inactiveReviewFactHighlights,
-            ...inactiveUntaggedDateHighlights,
-            ...inactiveUntaggedNumberHighlights
         ]);
 
         // Enable untagged date highlighting and assert values

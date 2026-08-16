@@ -47,6 +47,7 @@ export class Viewer {
         this._ixNodeMap = {};
         this.docOrderItemIndex = new DocOrderIndex();
         this._currentDocumentIndex = 0;
+        this._untaggedWrapped = false;
         /* Ticket 02's output-identity check needs the wrapperNodes *order* per
          * fact, which no DOM signature can see - two arms can class exactly the
          * same elements and still hand every downstream consumer a differently
@@ -104,36 +105,13 @@ export class Viewer {
                             const body = $(iframe).contents().find("body").get(0);
                             await viewer._iv.pluginPromise('preProcessiXBRL', body, docIndex);
                             if (viewer._iv.isReviewModeEnabled()) {
-                                await new Promise((resolve, _) => {
-                                    viewer._iv.setProgress("Finding untagged numbers and dates").then(() => {
-                                        /* Once per *load*, not once per document.
-                                         * These marks used to be last-write-wins
-                                         * inside the per-iframe loop, so on a
-                                         * multi-document set (clorox-2022) the
-                                         * phase described only the final document
-                                         * while the spans nested inside it
-                                         * accumulated across all of them - 80.0ms
-                                         * of phase against 138.4ms of span.  The
-                                         * end mark is still last-write-wins, so
-                                         * the pair now brackets the whole loop
-                                         * and the two agree.  Ticket 12. */
-                                        perfMarkOnce('phase.untagged.start');
-                                        perfCount('viewer.untagged.docs');
-                                        // Temporarily hide all children of "body" to avoid constant
-                                        // re-layouts when wrapping untagged numbers
-                                        const children = perfSpan('viewer.untagged.hideChildren', () => {
-                                            const c = $(body).children(':visible');
-                                            c.hide();
-                                            return c;
-                                        });
-                                        $(body).addClass("review");
-                                        perfSpan('viewer.wrapUntaggedNumbers', () =>
-                                            viewer._wrapUntaggedNumbers($(body), docIndex, false));
-                                        perfSpan('viewer.untagged.showChildren', () => children.show());
-                                        perfMark('phase.untagged.end');
-                                        resolve();
-                                    });
-                                });
+                                /* Review flattening CSS must be on at startup.
+                                 * The untagged number/date walk is deferred until
+                                 * the first highlight-untagged click: wrapping is
+                                 * invisible until then, and hide/show of Principal's
+                                 * body children is 683-798 ms even with wraps
+                                 * skipped. */
+                                $(body).addClass("review");
                             }
                         }
                     })()
@@ -158,6 +136,28 @@ export class Viewer {
                         });
                 })
                 .catch(err => reject(err));
+        });
+    }
+
+    ensureUntaggedNumbersWrapped() {
+        if (this._untaggedWrapped || !this._iv?.isReviewModeEnabled?.()) {
+            return;
+        }
+        this._untaggedWrapped = true;
+        const viewer = this;
+        this._iframes.each(function (docIndex) {
+            const body = $(this).contents().find("body").get(0);
+            perfMarkOnce('phase.untagged.start');
+            perfCount('viewer.untagged.docs');
+            const children = perfSpan('viewer.untagged.hideChildren', () => {
+                const c = $(body).children(':visible');
+                c.hide();
+                return c;
+            });
+            perfSpan('viewer.wrapUntaggedNumbers', () =>
+                viewer._wrapUntaggedNumbers($(body), docIndex, false));
+            perfSpan('viewer.untagged.showChildren', () => children.show());
+            perfMark('phase.untagged.end');
         });
     }
 
@@ -241,7 +241,8 @@ export class Viewer {
             rewrittenNodes: 0, emptyTextNodes: 0,
             contents: 0, elementTest: 0, match: 0, matchRewrite: 0, rewrite: 0,
         };
-        this._wrapUntaggedNumbersInner(n, docIndex, ignoreFullMatch, acc);
+        const el = n && n.jquery ? n[0] : n;
+        this._wrapUntaggedNumbersInner(el, ignoreFullMatch, acc);
 
         /* Volumes.  The first three are the arm guard: the walk is untouched by
          * every ticket 12 arm and replaceWith preserves text content, so all
@@ -268,25 +269,27 @@ export class Viewer {
         perfDeepAdd('untagged.rewrite', acc.rewrite);
     }
 
-    _wrapUntaggedNumbersInner(n, docIndex, ignoreFullMatch, acc) {
+    _wrapUntaggedNumbersInner(el, ignoreFullMatch, acc) {
         const viewer = this;
         const ixHiddenStyleRE = /(?:^|\s|;)-(?:sec|esef)-ix-hidden:\s*([^\s;]+)/;
         /* Hoisted so the per-node clocks below are a test of an already-loaded
          * boolean rather than a call into perf.js. */
         const deep = PERF_DEEP;
         const arm = ABLATE_UNTAGGED;
+        const parentText = ignoreFullMatch ? el.textContent : null;
+        const doc = el.ownerDocument;
 
         let t = deep ? performance.now() : 0;
-        const contents = n.contents();
+        const contents = Array.from(el.childNodes);
         if (deep) {
             acc.contents += performance.now() - t;
         }
 
-        contents.each(function () {
-            if (this.nodeType === Node.ELEMENT_NODE) {
+        for (const node of contents) {
+            if (node.nodeType === Node.ELEMENT_NODE) {
                 acc.elementNodes++;
                 t = deep ? performance.now() : 0;
-                const name = localName(this.nodeName.toUpperCase());
+                const name = localName(node.nodeName.toUpperCase());
                 /*
                  * Content in text tags should not be considered tagged, so carry
                  * on searching if it's not:
@@ -303,20 +306,20 @@ export class Viewer {
                  */
                 const recurse = !(
                         name === 'NONFRACTION' ||
-                        (name === 'NONNUMERIC' && this.getAttribute('format') !== null) ||
-                        (this.hasAttribute('style') && this.getAttribute('style').match(ixHiddenStyleRE))
+                        (name === 'NONNUMERIC' && node.getAttribute('format') !== null) ||
+                        (node.hasAttribute('style') && node.getAttribute('style').match(ixHiddenStyleRE))
                 );
                 if (deep) {
                     acc.elementTest += performance.now() - t;
                 }
                 if (recurse) {
                     acc.elementsRecursed++;
-                    viewer._wrapUntaggedNumbersInner($(this), docIndex, name === 'NONNUMERIC', acc);
+                    viewer._wrapUntaggedNumbersInner(node, name === 'NONNUMERIC', acc);
                 }
             }
-            else if (this.nodeType === Node.TEXT_NODE) {
+            else if (node.nodeType === Node.TEXT_NODE) {
                 acc.textNodes++;
-                const input = this.nodeValue;
+                const input = node.nodeValue;
                 acc.textChars += input.length;
                 /* Arms are named explicitly, never reached by a bare else - an
                  * arm belonging to another code path must leave this walk
@@ -325,19 +328,19 @@ export class Viewer {
                     acc.emptyTextNodes++;
                 }
                 if (arm === 'untaggedwalkonly') {
-                    return;
+                    continue;
                 }
                 const rewrite = arm !== 'untaggednorewrite';
-                /* Ticket 25's arm.  The div is built on the first match instead of
-                 * up front, which is what lets a non-matching node skip the whole
-                 * rewrite - ticket 09 §3 found that lazy allocation is the larger
-                 * half of R_u, not the replaceWith. */
+                /* Ticket 25's arm.  The fragment is built on the first match
+                 * instead of up front, which is what lets a non-matching node
+                 * skip the whole rewrite - ticket 09 §3 found that lazy
+                 * allocation is the larger half of R_u, not the replaceWith. */
                 /* Isolation of conditional-untagged-rewrite: lazy allocation is
                  * the shipped default.  The untaggedcondrewrite ablation arm is
                  * now a null vs none. */
                 const cond = true;
                 t = deep ? performance.now() : 0;
-                let output = (rewrite && !cond) ? $("<div></div>") : null;
+                let output = (rewrite && !cond) ? doc.createDocumentFragment() : null;
                 if (deep) {
                     acc.rewrite += performance.now() - t;
                 }
@@ -354,11 +357,11 @@ export class Viewer {
                         acc.matches++;
                         /* Charged to `rewrite` and taken back off `cb`, so the
                          * four-term partition means the same thing on this arm as
-                         * on the other four: the div is rewrite cost wherever it
-                         * happens to be allocated. */
+                         * on the other four: the fragment is rewrite cost wherever
+                         * it happens to be allocated. */
                         if (cond && output === null) {
                             const td = deep ? performance.now() : 0;
-                            output = $("<div></div>");
+                            output = doc.createDocumentFragment();
                             if (deep) {
                                 const d = performance.now() - td;
                                 acc.rewrite += d;
@@ -366,25 +369,24 @@ export class Viewer {
                             }
                         }
                         if (rewrite && m.index > pos) {
-                            output.append(document.createTextNode(input.substring(pos, m.index)));
+                            output.appendChild(doc.createTextNode(input.substring(pos, m.index)));
                         }
                         // If "ignoreFullMatch" is specified, we ignore a match which
-                        // covers the whole of n's text content.
+                        // covers the whole of el's text content.
                         if (do_not_want ||
-                                (ignoreFullMatch && m.index === 0 && m.index + m[0].length === input.length && input === n.text())) {
+                                (ignoreFullMatch && m.index === 0 && m.index + m[0].length === input.length && input === parentText)) {
                             acc.keptAsText++;
                             if (rewrite) {
-                                output.append(document.createTextNode(m[0]));
+                                output.appendChild(doc.createTextNode(m[0]));
                             }
                         }
                         else {
                             acc.wrapped++;
                             if (rewrite) {
-                                const c = is_date ? 'review-untagged-date' : 'review-untagged-number';
-                                $('<span></span>')
-                                        .text(m[0])
-                                        .addClass(c)
-                                        .appendTo(output);
+                                const span = doc.createElement('span');
+                                span.className = is_date ? 'review-untagged-date' : 'review-untagged-number';
+                                span.textContent = m[0];
+                                output.appendChild(span);
                             }
                         }
                         pos = m.index + m[0].length;
@@ -413,21 +415,25 @@ export class Viewer {
                          * removes it, so that one case still runs and the arm stays
                          * output-identical rather than a behaviour change. */
                         if (input.length > 0) {
-                            return;
+                            continue;
                         }
-                        output = $("<div></div>");
                     }
                     t = deep ? performance.now() : 0;
-                    if (pos < input.length) {
-                        output.append(document.createTextNode(input.substring(pos, input.length)));
+                    if (input.length === 0) {
+                        node.remove();
                     }
-                    $(this).replaceWith(output.contents());
+                    else {
+                        if (pos < input.length) {
+                            output.appendChild(doc.createTextNode(input.substring(pos, input.length)));
+                        }
+                        node.parentNode.replaceChild(output, node);
+                    }
                     if (deep) {
                         acc.rewrite += performance.now() - t;
                     }
                 }
             }
-        });
+        }
     }
 
     /*

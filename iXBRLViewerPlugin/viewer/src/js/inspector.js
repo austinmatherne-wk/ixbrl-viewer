@@ -681,10 +681,7 @@ export class Inspector {
     inspectorMode(mode, focusInspector) {
         this._viewAnimation?.cancel();
         const allModes = ["fact-mode", "search-mode", "overview-mode", "settings-mode"];
-        $("#inspector-tabs button")
-            .removeClass("selected")
-            .filter((i, e) => $(e).data("mode") === mode)
-            .addClass("selected");
+        this.selectInspectorTab(mode);
         $("#ixv").removeClass("show-filters");
         $("#ixv").removeClass(allModes.filter(m => m !== mode)).addClass(mode);
         const animate = this._curInspectorMode === "fact-mode" && mode === "fact-mode";
@@ -695,6 +692,33 @@ export class Inspector {
             this._showFactList(animate);
         }
         this._curInspectorMode = mode;
+    }
+
+    selectInspectorTab(mode) {
+        const selected = $("#inspector-tabs button[data-mode]")
+            .removeClass("selected")
+            .filter((i, e) => $(e).data("mode") === mode)
+            .addClass("selected");
+        this._tabIndicator ??= $('<span class="tab-indicator" aria-hidden="true"></span>');
+        const indicator = this._tabIndicator.get(0);
+        if (indicator.parentElement === selected.get(0)) {
+            return;
+        }
+        const previous = indicator.getBoundingClientRect();
+        this._tabAnimation?.cancel();
+        if (!selected.length) {
+            this._tabIndicator.detach();
+            return;
+        }
+        this._tabIndicator.appendTo(selected);
+        const next = indicator.getBoundingClientRect();
+        if (previous.width && next.width && indicator.animate &&
+            !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            this._tabAnimation = indicator.animate([
+                { transform: `translateX(${previous.left - next.left}px) scaleX(${previous.width / next.width})` },
+                { transform: "translateX(0) scaleX(1)" },
+            ], { duration: 140, easing: "ease-out" });
+        }
     }
 
     _factInspectorBody() {

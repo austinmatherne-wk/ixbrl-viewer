@@ -1551,3 +1551,29 @@ describe("Inspector view transitions", () => {
         expect(animation.cancel).toHaveBeenCalledTimes(1);
     });
 });
+
+
+describe("Inspector tab indicator", () => {
+    test("selection moves one indicator and removes it for settings", () => {
+        $(document.body).append(`<nav id="inspector-tabs">
+            <button data-mode="fact-mode"></button>
+            <button data-mode="search-mode"></button>
+        </nav>`);
+        try {
+            const insp = new TestInspector();
+            insp.selectInspectorTab("fact-mode");
+            const indicator = $(".tab-indicator").get(0);
+            insp.selectInspectorTab("search-mode");
+            expect($(".tab-indicator").get(0)).toBe(indicator);
+            expect($(indicator).parent().data("mode")).toBe("search-mode");
+            expect($("#inspector-tabs .selected")).toHaveLength(1);
+            insp.selectInspectorTab("settings-mode");
+            expect($("#inspector-tabs .tab-indicator")).toHaveLength(0);
+            insp.selectInspectorTab("fact-mode");
+            expect($(".tab-indicator").get(0)).toBe(indicator);
+        }
+        finally {
+            $("#inspector-tabs").remove();
+        }
+    });
+});

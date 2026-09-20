@@ -134,3 +134,15 @@ input:disabled {
     background-color: var(--colour-row-hover);
   }
 }
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  #ixv button:not(.fact-list-item, .calc-fact-link) {
+    transition: background-color 100ms ease-out, color 100ms ease-out;
+
+    &:active,
+    &:disabled,
+    &.checked {
+      transition: none;
+    }
+  }
+}

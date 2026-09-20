@@ -77,3 +77,21 @@
     }
   }
 }
+
+@keyframes dialog-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dialog[open],
+  .dialog[open]::backdrop,
+  .dialog-mask {
+    animation: dialog-enter 140ms ease-out;
+  }
+}

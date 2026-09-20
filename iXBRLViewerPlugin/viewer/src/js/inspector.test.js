@@ -1363,6 +1363,23 @@ describe("Mobile inspector pane", () => {
         expect($("#ixv").hasClass("inspector-open")).toBe(false);
     });
 
+    test("closed mobile panes are inert, including during the exit transition", () => {
+        $("#ixv").append('<div id="pane-right"></div>');
+        const insp = mobileInspector(true);
+        const pane = $("#pane-right").get(0);
+        expect(pane.inert).toBe(true);
+        insp.openPane();
+        expect(pane.inert).toBe(false);
+        insp.closePane();
+        expect(pane.inert).toBe(true);
+        mediaMatches = false;
+        mediaListeners.forEach(l => l({ matches: false }));
+        expect(pane.inert).toBe(false);
+        mediaMatches = true;
+        mediaListeners.forEach(l => l({ matches: true }));
+        expect(pane.inert).toBe(true);
+    });
+
     test("openPane is a no op on the desktop layout", () => {
         const insp = mobileInspector(false);
         insp.openPane();

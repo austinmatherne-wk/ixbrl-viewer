@@ -1707,6 +1707,10 @@ ul.plain-list {
 // opened from the top bar and closed from its tab bar.
 // The query must match MOBILE_MEDIA_QUERY in util.js.
 @media (width <= 767px) {
+  #panes {
+    overflow: clip;
+  }
+
   #pane-left {
     // interact.js leaves an inline width and flex-grow behind after a resize
     width: auto !important;
@@ -1720,7 +1724,10 @@ ul.plain-list {
   }
 
   #pane-right {
-    display: none;
+    visibility: hidden;
+    transform: translateX(100%);
+    pointer-events: none;
+    transition: transform 200ms ease-out, visibility 0s 200ms;
     position: fixed;
     inset: 0;
     min-width: 0;
@@ -1730,7 +1737,14 @@ ul.plain-list {
     z-index: 12;
 
     #ixv.inspector-open & {
-      display: flex;
+      visibility: visible;
+      transform: translateX(0);
+      pointer-events: auto;
+      transition-delay: 0s;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      transition: none;
     }
   }
 

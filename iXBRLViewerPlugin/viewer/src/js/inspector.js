@@ -306,8 +306,10 @@ export class Inspector {
             if (!e.matches) {
                 this.closePane();
             }
+            this.updatePaneInteractivity();
             this.positionPane();
         });
+        this.updatePaneInteractivity();
         window.visualViewport.addEventListener("resize", () => this.positionPane());
         window.visualViewport.addEventListener("scroll", () => this.positionPane());
         $("#inspector-toggle").on("click", () => this.togglePane());
@@ -334,15 +336,21 @@ export class Inspector {
         return this._mobileLayoutQuery?.matches === true;
     }
 
+    updatePaneInteractivity() {
+        $("#pane-right").prop("inert", this.isMobileLayout() && !$("#ixv").hasClass("inspector-open"));
+    }
+
     openPane() {
         if (this.isMobileLayout()) {
             $("#ixv").addClass("inspector-open");
+            this.updatePaneInteractivity();
             this.positionPane();
         }
     }
 
     closePane() {
         $("#ixv").removeClass("inspector-open");
+        this.updatePaneInteractivity();
     }
 
     togglePane() {

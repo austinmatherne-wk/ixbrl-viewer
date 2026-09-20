@@ -687,11 +687,12 @@ export class Inspector {
             .addClass("selected");
         $("#ixv").removeClass("show-filters");
         $("#ixv").removeClass(allModes.filter(m => m !== mode)).addClass(mode);
+        const animate = this._curInspectorMode === "fact-mode" && mode === "fact-mode";
         if (focusInspector === true) {
-            this._showFactDetails();
+            this._showFactDetails(animate);
         }
         else if ((focusInspector === false || this._curInspectorMode === "fact-mode" && mode === "fact-mode") && this.outline.hasOutline()) {
-            this._showFactList();
+            this._showFactList(animate);
         }
         this._curInspectorMode = mode;
     }
@@ -700,21 +701,28 @@ export class Inspector {
         return $("#inspector .fact-inspector > .inspector-body");
     }
 
-    _showFactDetails() {
+    _showFactDetails(animate = false) {
         const body = this._factInspectorBody();
-        if ($("#inspector").hasClass("show-facts-by-group")) {
+        const wasShowingList = $("#inspector").hasClass("show-facts-by-group");
+        if (wasShowingList) {
             this._factListScrollTop = body.scrollTop();
         }
         $("#inspector").removeClass("show-facts-by-group");
         body.scrollTop(0);
+        if (animate && wasShowingList) {
+            this.animateInspectorView(body.get(0), 12);
+        }
     }
 
-    _showFactList() {
+    _showFactList(animate = false) {
         const wasShowingList = $("#inspector").hasClass("show-facts-by-group");
         $("#inspector").addClass("show-facts-by-group");
         if (!wasShowingList && this._factListScrollTop !== undefined) {
             this._factInspectorBody().scrollTop(this._factListScrollTop);
             this._factListScrollTop = undefined;
+        }
+        if (animate && !wasShowingList) {
+            this.animateInspectorView(this._factInspectorBody().get(0), -12);
         }
     }
 

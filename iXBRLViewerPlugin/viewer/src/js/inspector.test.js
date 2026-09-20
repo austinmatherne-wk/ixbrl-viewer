@@ -1498,6 +1498,27 @@ describe("Inspector view transitions", () => {
         expect(element.animate).not.toHaveBeenCalled();
     });
 
+    test("fact navigation animates only when moving between list and details", () => {
+        $("#inspector").append('<div class="fact-inspector"><div class="inspector-body"></div></div>');
+        const body = $(".fact-inspector .inspector-body").get(0);
+        body.animate = element.animate;
+        insp.outline = { hasOutline: () => true };
+        insp.inspectorMode("fact-mode", false);
+        expect(body.animate).not.toHaveBeenCalled();
+        body.scrollTop = 120;
+        insp.inspectorMode("fact-mode", true);
+        expect(body.animate.mock.calls[0][0][0].transform).toBe("translateX(12px)");
+        expect(body.scrollTop).toBe(0);
+        insp.inspectorMode("fact-mode", true);
+        expect(body.animate).toHaveBeenCalledTimes(1);
+        insp.inspectorMode("fact-mode", false);
+        expect(body.animate.mock.calls[1][0][0].transform).toBe("translateX(-12px)");
+        expect(body.scrollTop).toBe(120);
+        insp.inspectorMode("search-mode");
+        insp.inspectorMode("fact-mode", true);
+        expect(body.animate).toHaveBeenCalledTimes(2);
+    });
+
     test("closing the mobile pane cancels content motion", () => {
         insp.showSearchFilters(true);
         insp.closePane();

@@ -731,6 +731,7 @@ export class Inspector {
             this._prevInspectorMode = this._curInspectorMode;
             this._paneOpenedForSettings = !$("#ixv").hasClass("inspector-open");
             this.inspectorMode("settings-mode");
+            this.animateInspectorView($("#inspector").get(0), 12);
             this.openPane();
         }
         else {
@@ -742,6 +743,9 @@ export class Inspector {
         this.inspectorMode(this._prevInspectorMode);
         if (this._paneOpenedForSettings) {
             this.closePane();
+        }
+        if (!this.isMobileLayout() || !this._paneOpenedForSettings) {
+            this.animateInspectorView($("#inspector").get(0), -12);
         }
     }
 

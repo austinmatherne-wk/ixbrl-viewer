@@ -1519,6 +1519,32 @@ describe("Inspector view transitions", () => {
         expect(body.animate).toHaveBeenCalledTimes(2);
     });
 
+    test("settings animate in both directions on desktop", () => {
+        const inspector = $("#inspector").get(0);
+        inspector.animate = element.animate;
+        insp.inspectorMode("search-mode");
+        insp.toggleSettingsMode();
+        expect(inspector.animate.mock.calls[0][0][0].transform).toBe("translateX(12px)");
+        insp.closeSettingsMode();
+        expect(inspector.animate.mock.calls[1][0][0].transform).toBe("translateX(-12px)");
+        expect($("#ixv").hasClass("search-mode")).toBe(true);
+    });
+
+    test("mobile settings use only the pane transition unless it is already open", () => {
+        const inspector = $("#inspector").get(0);
+        inspector.animate = element.animate;
+        insp._mobileLayoutQuery = { matches: true };
+        insp.inspectorMode("search-mode");
+        insp.toggleSettingsMode();
+        insp.closeSettingsMode();
+        expect(inspector.animate).not.toHaveBeenCalled();
+        insp.openPane();
+        insp.toggleSettingsMode();
+        insp.closeSettingsMode();
+        expect(inspector.animate).toHaveBeenCalledTimes(2);
+        expect($("#ixv").hasClass("inspector-open")).toBe(true);
+    });
+
     test("closing the mobile pane cancels content motion", () => {
         insp.showSearchFilters(true);
         insp.closePane();

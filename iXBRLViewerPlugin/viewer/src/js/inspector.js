@@ -349,6 +349,7 @@ export class Inspector {
     }
 
     closePane() {
+        this._viewAnimation?.cancel();
         $("#ixv").removeClass("inspector-open");
         this.updatePaneInteractivity();
     }
@@ -678,6 +679,7 @@ export class Inspector {
     }
 
     inspectorMode(mode, focusInspector) {
+        this._viewAnimation?.cancel();
         const allModes = ["fact-mode", "search-mode", "overview-mode", "settings-mode"];
         $("#inspector-tabs button")
             .removeClass("selected")
@@ -983,10 +985,30 @@ export class Inspector {
         }
 
         $(".search-controls input, .search-filters input, .search-filters select").on("change", () => this.search());
-        $(".search-controls button.filter-toggle").on("click", () => $("#ixv").addClass('show-filters'));
-        $(".search-filters .close").on("click", () => $("#ixv").removeClass('show-filters'));
-        $(".search-filters button.search-apply-filters").on("click", () => $("#ixv").removeClass('show-filters'));
+        $(".search-controls button.filter-toggle").on("click", () => this.showSearchFilters(true));
+        $(".search-filters .close").on("click", () => this.showSearchFilters(false));
+        $(".search-filters button.search-apply-filters").on("click", () => this.showSearchFilters(false));
         $(".search-filters button.search-reset-filters").on("click", () => this.resetSearchFilters());
+    }
+
+    animateInspectorView(element, offset = 0) {
+        this._viewAnimation?.cancel();
+        if (!element?.animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
+            (this.isMobileLayout() && !$("#ixv").hasClass("inspector-open"))) {
+            return;
+        }
+        this._viewAnimation = element.animate([
+            { opacity: 0, transform: `translateX(${offset}px)` },
+            { opacity: 1, transform: "translateX(0)" },
+        ], { duration: 180, easing: "ease-out" });
+    }
+
+    showSearchFilters(show) {
+        if ($("#ixv").hasClass("show-filters") === show) {
+            return;
+        }
+        $("#ixv").toggleClass("show-filters", show);
+        this.animateInspectorView($("#inspector .search-inspector").get(0));
     }
 
     _getScalesOptions() {

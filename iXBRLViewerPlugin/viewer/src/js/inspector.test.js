@@ -1457,3 +1457,50 @@ describe("Mobile inspector pane", () => {
         expect($("#ixv").hasClass("inspector-open")).toBe(false);
     });
 });
+
+
+describe("Inspector view transitions", () => {
+    const realMatchMedia = window.matchMedia;
+    let insp;
+    let element;
+    let animation;
+
+    beforeEach(() => {
+        $(document.body).append('<div id="ixv"><div id="inspector"><div class="search-inspector"></div></div></div>');
+        insp = new TestInspector();
+        element = $(".search-inspector").get(0);
+        animation = { cancel: jest.fn() };
+        element.animate = jest.fn(() => animation);
+    });
+
+    afterEach(() => {
+        $("#ixv").remove();
+        window.matchMedia = realMatchMedia;
+    });
+
+    test("filter navigation replaces an unfinished animation", () => {
+        insp.showSearchFilters(true);
+        expect($("#ixv").hasClass("show-filters")).toBe(true);
+        insp.showSearchFilters(false);
+        expect($("#ixv").hasClass("show-filters")).toBe(false);
+        expect(animation.cancel).toHaveBeenCalledTimes(1);
+        expect(element.animate).toHaveBeenCalledTimes(2);
+        insp.showSearchFilters(false);
+        expect(element.animate).toHaveBeenCalledTimes(2);
+    });
+
+    test("reduced motion still changes the view immediately", () => {
+        window.matchMedia = () => ({ matches: true });
+        insp.showSearchFilters(true);
+        expect($("#ixv").hasClass("show-filters")).toBe(true);
+        insp.showSearchFilters(false);
+        expect($("#ixv").hasClass("show-filters")).toBe(false);
+        expect(element.animate).not.toHaveBeenCalled();
+    });
+
+    test("closing the mobile pane cancels content motion", () => {
+        insp.showSearchFilters(true);
+        insp.closePane();
+        expect(animation.cancel).toHaveBeenCalledTimes(1);
+    });
+});

@@ -126,3 +126,21 @@
     }
   }
 }
+
+@keyframes menu-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #ixv .menu:not(.inline-menu) .content-container .content {
+    animation: menu-enter 120ms ease-out;
+  }
+}

@@ -290,7 +290,9 @@ export class iXBRLViewer {
 
     /* Poll for iframe load completing - there doesn't seem to be a reliable event that we can use */
     _whenDocumentsReady(iframes, onReady) {
-        const timer = setInterval(() => {
+        let timer = null;
+        let resolved = false;
+        const attempt = () => {
             let complete = true;
             iframes.each((n, iframe) => {
                 const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
@@ -303,10 +305,17 @@ export class iXBRLViewer {
                 }
             });
             if (complete) {
+                resolved = true;
                 clearInterval(timer);
                 onReady();
             }
-        }, 250);
+        };
+        // _reparentDocument() fills the first document synchronously, so an
+        // inline viewer is usually ready before the first poll would fire.
+        attempt();
+        if (!resolved) {
+            timer = setInterval(attempt, 250);
+        }
     }
 
     _getTaxonomyData() {

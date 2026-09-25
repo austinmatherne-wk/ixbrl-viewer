@@ -428,6 +428,15 @@ describe("Source document readiness", () => {
         expect(onReady).toHaveBeenCalledTimes(1);
     });
 
+    test("An already loaded document set does not wait for the poll", () => {
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(makeIframe('complete', true)), onReady);
+
+        expect(onReady).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+    });
+
     test("An interactive document with content counts as ready", () => {
         const onReady = jest.fn();
 

@@ -304,7 +304,7 @@ export class iXBRLViewer {
                     complete = false;
                 }
             });
-            if (complete) {
+            if (complete && !resolved) {
                 resolved = true;
                 clearInterval(timer);
                 onReady();
@@ -314,6 +314,10 @@ export class iXBRLViewer {
         // inline viewer is usually ready before the first poll would fire.
         attempt();
         if (!resolved) {
+            // Chrome throttles timers while a large document loads, but not load events.
+            iframes.each((n, iframe) => iframe.addEventListener('load', attempt));
+            // load only fires at readyState complete, so the poll is still what
+            // lets an interactive document through.
             timer = setInterval(attempt, 250);
         }
     }

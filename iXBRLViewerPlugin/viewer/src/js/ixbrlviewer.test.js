@@ -496,6 +496,31 @@ describe("Source document readiness", () => {
         expect(onReady).toHaveBeenCalledTimes(1);
     });
 
+    test("A load event does not wait for the next poll", () => {
+        const iframe = makeIframe('loading', false);
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(iframe), onReady);
+        becomeReady(iframe);
+        iframe.dispatchEvent(new Event('load'));
+
+        expect(onReady).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+    });
+
+    test("onReady is called once however many triggers fire", () => {
+        const iframe = makeIframe('loading', false);
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(iframe), onReady);
+        becomeReady(iframe);
+        iframe.dispatchEvent(new Event('load'));
+        iframe.dispatchEvent(new Event('load'));
+        jest.advanceTimersByTime(1000);
+
+        expect(onReady).toHaveBeenCalledTimes(1);
+    });
+
     test("Every document must be ready, not just the first", () => {
         const first = makeIframe('complete', true);
         const second = makeIframe('loading', false);

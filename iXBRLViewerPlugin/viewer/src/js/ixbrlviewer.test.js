@@ -1,5 +1,6 @@
 // See COPYRIGHT.md for copyright information
 
+import $ from "jquery";
 import {iXBRLViewer} from "./ixbrlviewer";
 import {
     FEATURE_GUIDE_LINK,
@@ -285,5 +286,88 @@ describe("Document reparenting", () => {
         viewer._addViewportMeta();
         viewer._addViewportMeta();
         expect(document.head.querySelectorAll('meta[name="viewport"]').length).toEqual(1);
+    });
+});
+
+describe("Source document readiness", () => {
+    let viewer;
+
+    /* readyState is an accessor on Document.prototype, so an own property on
+     * the instance is how a test sets the state. */
+    function setReadyState(iframe, readyState) {
+        Object.defineProperty(iframe.contentDocument, 'readyState',
+            {value: readyState, configurable: true});
+    }
+
+    function makeIframe(readyState, hasBodyChildren) {
+        const iframe = document.createElement('iframe');
+        document.body.appendChild(iframe);
+        setReadyState(iframe, readyState);
+        iframe.contentDocument.body.innerHTML = hasBodyChildren ? '<div></div>' : '';
+        return iframe;
+    }
+
+    function becomeReady(iframe) {
+        setReadyState(iframe, 'complete');
+        iframe.contentDocument.body.innerHTML = '<div></div>';
+    }
+
+    beforeEach(() => {
+        jest.useFakeTimers();
+        document.body.innerHTML = '';
+        viewer = new iXBRLViewer({});
+    });
+
+    afterEach(() => {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+    });
+
+    test("Waits until the document is ready", () => {
+        const iframe = makeIframe('loading', false);
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(iframe), onReady);
+        jest.advanceTimersByTime(250);
+        expect(onReady).not.toHaveBeenCalled();
+
+        becomeReady(iframe);
+        jest.advanceTimersByTime(250);
+        expect(onReady).toHaveBeenCalledTimes(1);
+
+        jest.advanceTimersByTime(1000);
+        expect(onReady).toHaveBeenCalledTimes(1);
+    });
+
+    test("An interactive document with content counts as ready", () => {
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(makeIframe('interactive', true)), onReady);
+        jest.advanceTimersByTime(250);
+
+        expect(onReady).toHaveBeenCalledTimes(1);
+    });
+
+    test("A complete document with no content is not ready", () => {
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(makeIframe('complete', false)), onReady);
+        jest.advanceTimersByTime(1000);
+
+        expect(onReady).not.toHaveBeenCalled();
+    });
+
+    test("Every document must be ready, not just the first", () => {
+        const first = makeIframe('complete', true);
+        const second = makeIframe('loading', false);
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(first).add(second), onReady);
+        jest.advanceTimersByTime(250);
+        expect(onReady).not.toHaveBeenCalled();
+
+        becomeReady(second);
+        jest.advanceTimersByTime(250);
+        expect(onReady).toHaveBeenCalledTimes(1);
     });
 });

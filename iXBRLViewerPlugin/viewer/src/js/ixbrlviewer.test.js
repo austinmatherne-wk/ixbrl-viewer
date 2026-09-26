@@ -312,6 +312,19 @@ describe("Source document readiness", () => {
         iframe.contentDocument.body.innerHTML = '<div></div>';
     }
 
+    function addStylesheet(iframe, rel = 'stylesheet') {
+        const link = iframe.contentDocument.createElement('link');
+        link.rel = rel;
+        link.href = 'report.css';
+        setSheet(link, null);
+        iframe.contentDocument.head.appendChild(link);
+        return link;
+    }
+
+    function setSheet(link, sheet) {
+        Object.defineProperty(link, 'sheet', {value: sheet, configurable: true});
+    }
+
     beforeEach(() => {
         jest.useFakeTimers();
         document.body.innerHTML = '';
@@ -355,6 +368,47 @@ describe("Source document readiness", () => {
         jest.advanceTimersByTime(1000);
 
         expect(onReady).not.toHaveBeenCalled();
+    });
+
+    test("An interactive document waits for its linked stylesheets", () => {
+        const iframe = makeIframe('interactive', true);
+        const loaded = addStylesheet(iframe);
+        const pending = addStylesheet(iframe, 'StyleSheet');
+        setSheet(loaded, {});
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(iframe), onReady);
+        jest.advanceTimersByTime(1000);
+        expect(onReady).not.toHaveBeenCalled();
+
+        setSheet(pending, {});
+        jest.advanceTimersByTime(250);
+        expect(onReady).toHaveBeenCalledTimes(1);
+    });
+
+    test("A stylesheet that never loads stops blocking once the document is complete", () => {
+        const iframe = makeIframe('interactive', true);
+        addStylesheet(iframe);
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(iframe), onReady);
+        jest.advanceTimersByTime(1000);
+        expect(onReady).not.toHaveBeenCalled();
+
+        setReadyState(iframe, 'complete');
+        jest.advanceTimersByTime(250);
+        expect(onReady).toHaveBeenCalledTimes(1);
+    });
+
+    test("Other linked resources do not block", () => {
+        const iframe = makeIframe('interactive', true);
+        addStylesheet(iframe, 'icon');
+        const onReady = jest.fn();
+
+        viewer._whenDocumentsReady($(iframe), onReady);
+        jest.advanceTimersByTime(250);
+
+        expect(onReady).toHaveBeenCalledTimes(1);
     });
 
     test("Every document must be ready, not just the first", () => {

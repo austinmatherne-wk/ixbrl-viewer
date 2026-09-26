@@ -11,6 +11,13 @@ import { FEATURE_GUIDE_LINK, FEATURE_REVIEW, FEATURE_SUPPORT_LINK, FEATURE_SURVE
 
 const featureFalsyValues = new Set([undefined, null, '', 'false', false]);
 
+// A null sheet can mean loading, failed, or never fetched, and only complete
+// tells those apart, because it waits for every stylesheet to load or fail.
+function stylesheetsSettled(doc) {
+    return doc.readyState === 'complete' ||
+        Array.from(doc.querySelectorAll('link[rel~="stylesheet" i]')).every(link => link.sheet !== null);
+}
+
 export class iXBRLViewer {
 
     constructor(options) {
@@ -262,6 +269,10 @@ export class iXBRLViewer {
             iframes.each((n, iframe) => {
                 const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
                 if ((iframeDoc.readyState !== 'complete' && iframeDoc.readyState !== 'interactive') || $(iframe).contents().find("body").children().length === 0) {
+                    complete = false;
+                }
+                // Wrapping reads computed styles, so they must be final.
+                else if (!stylesheetsSettled(iframeDoc)) {
                     complete = false;
                 }
             });

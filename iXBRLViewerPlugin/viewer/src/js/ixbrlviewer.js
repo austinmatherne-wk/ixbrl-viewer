@@ -11,11 +11,27 @@ import { FEATURE_GUIDE_LINK, FEATURE_REVIEW, FEATURE_SUPPORT_LINK, FEATURE_SURVE
 
 const featureFalsyValues = new Set([undefined, null, '', 'false', false]);
 
+function stylesheetLinks(doc) {
+    return Array.from(doc.querySelectorAll('link[rel~="stylesheet" i]'));
+}
+
 // A null sheet can mean loading, failed, or never fetched, and only complete
 // tells those apart, because it waits for every stylesheet to load or fail.
 function stylesheetsSettled(doc) {
     return doc.readyState === 'complete' ||
-        Array.from(doc.querySelectorAll('link[rel~="stylesheet" i]')).every(link => link.sheet !== null);
+        stylesheetLinks(doc).every(link => link.sheet !== null);
+}
+
+// Must be called in the same task that inserted the link, so its load or
+// error event cannot already have fired.
+function whenStylesheetSettled(link) {
+    if (link.sheet !== null) {
+        return Promise.resolve();
+    }
+    return new Promise(resolve => {
+        link.addEventListener('load', resolve, {once: true});
+        link.addEventListener('error', resolve, {once: true});
+    });
 }
 
 export class iXBRLViewer {
@@ -26,6 +42,7 @@ export class iXBRLViewer {
         this._plugins = [];
         this.inspector = new Inspector(this);
         this.viewer = null;
+        this._movedStylesheetsSettled = Promise.resolve();
         options = options || {};
         const defaults = {
             continuationElementLimit: 10000,
@@ -231,6 +248,9 @@ export class iXBRLViewer {
         const reportTitle = $('title').text();
         const docTitle = reportTitle !== "" ? `${titlePrefix} - ${reportTitle}` : titlePrefix;
 
+        // A link that never loaded here may never fetch, so it would never
+        // fire load or error.
+        const loadedStylesheets = new Set(stylesheetLinks(document).filter(link => link.sheet !== null));
 
         $('head')
             .children().not("script, style#ixv-style, link#ixv-style-skin, link#ixv-favicon, link#ixv-favicon-svg").appendTo($(iframe).contents().find('head'));
@@ -253,6 +273,12 @@ export class iXBRLViewer {
 
         /* Avoid any inline styles on the old body interfering with the inspector */
         body.removeAttr('style');
+
+        // A moved link loads again for the iframe, and Chrome marks the iframe
+        // complete without waiting for it, so readiness cannot see it.
+        this._movedStylesheetsSettled = Promise.all(stylesheetLinks(doc)
+            .filter(link => loadedStylesheets.has(link))
+            .map(whenStylesheetSettled));
         return iframe;
     }
 
@@ -400,7 +426,7 @@ export class iXBRLViewer {
             }
 
             const progress = stubViewer ? 'Loading iXBRL Report' : 'Loading iXBRL Viewer';
-            iv.setProgress(progress).then(() => {
+            iv.setProgress(progress).then(() => iv._movedStylesheetsSettled).then(() => {
                 iv._whenDocumentsReady(iframes, () => {
                     iframes.each((n, iframe) => {
                         const htmlNode = $(iframe).contents().find('html');

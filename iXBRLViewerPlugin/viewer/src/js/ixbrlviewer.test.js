@@ -289,6 +289,82 @@ describe("Document reparenting", () => {
     });
 });
 
+describe("Stylesheets moved into the iframe", () => {
+    let viewer;
+
+    /* jsdom never loads stylesheets, so the test decides what sheet is, both
+     * in the page and after the move. */
+    function addStylesheet({loadedInPage, loadedAfterMove}) {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'report.css';
+        Object.defineProperty(link, 'sheet', {
+            get() {
+                const loaded = this.ownerDocument === document ? loadedInPage : loadedAfterMove;
+                return loaded ? {} : null;
+            },
+        });
+        document.head.appendChild(link);
+        return link;
+    }
+
+    async function isSettled(promise) {
+        let settled = false;
+        promise.then(() => { settled = true; });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        return settled;
+    }
+
+    beforeEach(() => {
+        document.head.innerHTML = '<title>Report</title>';
+        document.body.innerHTML = '<div id="ixv"><div id="iframe-container"></div></div><p>Report</p>';
+        viewer = new iXBRLViewer({});
+        viewer.runtimeConfig = {};
+    });
+
+    afterEach(() => {
+        document.head.innerHTML = '';
+        document.body.innerHTML = '';
+    });
+
+    test("A report without linked stylesheets does not wait", async () => {
+        viewer._reparentDocument();
+
+        expect(await isSettled(viewer._movedStylesheetsSettled)).toBe(true);
+    });
+
+    test("Waits until a moved stylesheet loads again", async () => {
+        const link = addStylesheet({loadedInPage: true, loadedAfterMove: false});
+        viewer._reparentDocument();
+
+        expect(await isSettled(viewer._movedStylesheetsSettled)).toBe(false);
+        link.dispatchEvent(new Event('load'));
+        expect(await isSettled(viewer._movedStylesheetsSettled)).toBe(true);
+    });
+
+    test("A moved stylesheet that fails to load again stops the wait", async () => {
+        const link = addStylesheet({loadedInPage: true, loadedAfterMove: false});
+        viewer._reparentDocument();
+
+        link.dispatchEvent(new Event('error'));
+        expect(await isSettled(viewer._movedStylesheetsSettled)).toBe(true);
+    });
+
+    test("A moved stylesheet that is already available does not wait", async () => {
+        addStylesheet({loadedInPage: true, loadedAfterMove: true});
+        viewer._reparentDocument();
+
+        expect(await isSettled(viewer._movedStylesheetsSettled)).toBe(true);
+    });
+
+    test("A stylesheet that never loaded in the page is not waited for", async () => {
+        addStylesheet({loadedInPage: false, loadedAfterMove: false});
+        viewer._reparentDocument();
+
+        expect(await isSettled(viewer._movedStylesheetsSettled)).toBe(true);
+    });
+});
+
 describe("Source document readiness", () => {
     let viewer;
 
